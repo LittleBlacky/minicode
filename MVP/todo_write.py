@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-s03_todo_write_langgraph.py - LangGraph version of s03_todo_write.py
-Session Planning with TodoWrite tool, using LangGraph state machine.
-Reminder mechanism is integrated into the state update logic.
-"""
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -18,12 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-# ----------------------------------------------------------------------
-# Environment and model setup (init_chat_model)
-# ----------------------------------------------------------------------
 load_dotenv(override=True)
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
 WORKDIR = Path.cwd()
 MODEL_ID = os.environ["MODEL_ID"]
@@ -45,9 +34,7 @@ Use the todo tool for multi-step work.
 Keep exactly one step in_progress when a task has multiple steps.
 Refresh the plan as work advances. Prefer tools over prose."""
 
-# ----------------------------------------------------------------------
-# TodoManager (exactly as original)
-# ----------------------------------------------------------------------
+
 @dataclass
 class PlanItem:
     content: str
@@ -124,9 +111,7 @@ class TodoManager:
 
 TODO = TodoManager()
 
-# ----------------------------------------------------------------------
-# Core tool implementations
-# ----------------------------------------------------------------------
+
 def safe_path(path_str: str) -> Path:
     path = (WORKDIR / path_str).resolve()
     if not path.is_relative_to(WORKDIR):
@@ -190,9 +175,6 @@ def run_todo(items: list) -> str:
     return TODO.update(items)
 
 
-# ----------------------------------------------------------------------
-# Define tools using @tool decorator (LangChain format)
-# ----------------------------------------------------------------------
 @tool
 def bash_tool(command: str) -> str:
     """Run a shell command in the workspace."""
@@ -231,6 +213,7 @@ tool_map = {t.name: t for t in tools}
 
 # Bind tools to model
 model_with_tools = model.bind_tools(tools)
+
 
 # ----------------------------------------------------------------------
 # State definition (extended with reminder tracking)

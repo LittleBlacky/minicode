@@ -16,7 +16,6 @@ from langgraph.prebuilt import ToolNode
 load_dotenv(override=True)
 if os.getenv("ANTHROPIC_BASE_URL"):
     os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
-os.environ["NO_PROXY"] = "*"
 MODEL_ID = os.environ["AGENCY_LLM_MODEL"]
 BASE_URL = os.getenv("AGENCY_LLM_BASE_URL")
 API_KEY = os.getenv("AGENCY_LLM_API_KEY")

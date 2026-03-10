@@ -1,11 +1,7 @@
-#!/usr/bin/env python3
-"""
-s01_agent_loop.py - The Agent Loop (LangGraph version)
-Rewritten with LangGraph's state machine while preserving the original CLI experience.
-"""
-import os
+#!/usr/bin/env python3import os
 import subprocess
 from typing import Literal
+import os
 
 try:
     import readline
@@ -29,22 +25,14 @@ from langgraph.prebuilt import ToolNode
 from typing_extensions import Annotated, TypedDict
 
 load_dotenv(override=True)
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
-# ----------------------------------------------------------------------
-# Model initialization via init_chat_model (supports multiple providers)
-# ----------------------------------------------------------------------
 MODEL_ID = os.environ["AGENCY_LLM_MODEL"]
 BASE_URL = os.getenv("AGENCY_LLM_BASE_URL")
 API_KEY = os.getenv("AGENCY_LLM_API_KEY")
-
-# init_chat_model accepts provider/model strings like "anthropic:claude-3-5-sonnet-20240620"
-# If you're using a custom base URL, pass it via model_kwargs or environment variables.
-# For Anthropic specifically, the underlying ChatAnthropic will respect ANTHROPIC_BASE_URL.
+PROVIDER = os.getenv("AGENCY_LLM_PROVIDER")
 model = init_chat_model(
     MODEL_ID,
-    model_provider="deepseek",          # explicitly set provider
+    model_provider=PROVIDER,  # explicitly set provider
     temperature=0,
     max_tokens=8000,
     base_url=BASE_URL,
@@ -56,9 +44,7 @@ SYSTEM_PROMPT = (
     "Use bash to inspect and change the workspace. Act first, then report clearly."
 )
 
-# ----------------------------------------------------------------------
-# Tool definition (identical to original bash execution, but wrapped as @tool)
-# ----------------------------------------------------------------------
+
 @tool
 def bash(command: str) -> str:
     """Run a shell command in the current workspace."""
@@ -85,12 +71,9 @@ def bash(command: str) -> str:
 tools = [bash]
 tool_node = ToolNode(tools)
 
-# Bind tools to the model (LangChain style)
 model_with_tools = model.bind_tools(tools)
 
-# ----------------------------------------------------------------------
-# State definition
-# ----------------------------------------------------------------------
+
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
@@ -99,15 +82,6 @@ class AgentState(TypedDict):
 # Graph nodes
 # ----------------------------------------------------------------------
 def call_model(state: AgentState) -> dict:
-    """Invoke the LLM with the current conversation history."""
-    # Inject system prompt as the first message if not already present.
-    # A cleaner approach is to use a SystemMessage, but bind_tools with a
-    # system message requires a different setup; here we simply prepend
-    # the system instruction as a HumanMessage with a special marker.
-    # (The original Anthropic version used the `system` parameter.)
-    # For simplicity, we'll prepend a human message with system instructions.
-    # Alternatively, we can rely on the model's system prompt via config.
-    # We'll pass system via extra kwarg in `invoke` later.
     response = model_with_tools.invoke(
         state["messages"],
         config={"configurable": {"system": SYSTEM_PROMPT}},
@@ -116,7 +90,6 @@ def call_model(state: AgentState) -> dict:
 
 
 def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
-    """Determine whether to execute tools or finish."""
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tools"
@@ -137,11 +110,11 @@ workflow.add_edge("tools", "agent")
 
 graph = workflow.compile()
 
+
 # ----------------------------------------------------------------------
 # CLI loop (preserves original interactive style)
 # ----------------------------------------------------------------------
 def extract_text_from_message(msg) -> str:
-    """Extract plain text from a LangChain message for display."""
     if isinstance(msg, AIMessage):
         return msg.content if isinstance(msg.content, str) else str(msg.content)
     return ""
