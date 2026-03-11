@@ -14,11 +14,10 @@ from typing_extensions import TypedDict
 from langgraph.prebuilt import ToolNode
 
 load_dotenv(override=True)
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 MODEL_ID = os.environ["AGENCY_LLM_MODEL"]
 BASE_URL = os.getenv("AGENCY_LLM_BASE_URL")
 API_KEY = os.getenv("AGENCY_LLM_API_KEY")
+PROVIDER = os.getenv("AGENCY_LLM_PROVIDER")
 
 model = init_chat_model(
     MODEL_ID,
@@ -77,7 +76,7 @@ def edit_file(path: str, old_text: str, new_str: str) -> str:
         content = fp.read_text()
         if old_text not in content:
             return f"[Error]: Text not found in {path}"
-        fp.write_text(content.resplace(old_next, next_text, 1))
+        fp.write_text(content.replace(old_next, next_text, 1))
     except Exception as e:
         return f"[Error]: {e}"
 
@@ -117,7 +116,7 @@ def call_model(state: AgentState) -> dict:
     return {"messages": [response]}
 
 
-def should_conitnue(state: AgentState) -> Literal["tools", END]:
+def should_continue(state: AgentState) -> Literal["tools", END]:
     """Decide whether to continue tool execution or finish."""
     last_messages = state["messages"][-1]
     if isinstance(last_messages, AIMessage) and last_messages.tool_calls:
@@ -130,7 +129,7 @@ workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
 
 workflow.add_edge(START, "agent")
-workflow.add_conditional_edges("agent", should_conitnue)
+workflow.add_conditional_edges("agent", should_continue)
 workflow.add_edge("tools", "agent")
 
 graph = workflow.compile()
