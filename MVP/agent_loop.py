@@ -89,11 +89,11 @@ def call_model(state: AgentState) -> dict:
     return {"messages": [response]}
 
 
-def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
+def should_continue(state: AgentState) -> Literal["tools", END]:
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tools"
-    return "__end__"
+    return END
 
 
 # ----------------------------------------------------------------------
