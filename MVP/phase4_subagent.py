@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-s04_subagent_langgraph.py - Subagents (LangGraph 重写版)
+subagent.py - Subagents
 
 用 LangGraph 实现父子 Agent 的上下文隔离模式：
 - 父 Agent：拥有完整对话历史，通过 task 工具派发子任务
