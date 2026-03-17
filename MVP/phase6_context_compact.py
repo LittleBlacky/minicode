@@ -173,7 +173,6 @@ def should_compact(state: AgentState):
     """使用近似Token计数判断是否需要摘要"""
     total_tokens = count_tokens_approximately(
         state["messages"],
-        model=MODEL_ID,
     )
     # 调试时可打开下面的打印
     # print(f"当前Token数: {total_tokens}")
@@ -218,7 +217,7 @@ builder.add_conditional_edges(
 
 # 摘要后和工具执行后都进入agent
 builder.add_edge("summarize", "agent")
-builder.add_edge("tool", "agent")
+builder.add_edge("tool", "summarize")
 
 graph = builder.compile()
 
