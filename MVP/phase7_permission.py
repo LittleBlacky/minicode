@@ -20,6 +20,8 @@ from dotenv import load_dotenv
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+from langgraph.types import interrupt, Command
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -88,7 +90,7 @@ DEFAULT_RULES = [
 
 
 class PermissionManager:
-    """Pipeline: deny_rules → mode_check → allow_rules → ask_user"""
+    """Pipeline: deny_rules → mode_check → allow_rules → ask (via interrupt)"""
 
     def __init__(self, mode: str = "default", rules: list = None):
         if mode not in MODES:
@@ -132,27 +134,18 @@ class PermissionManager:
             if self._matches(rule, tool_name, tool_input):
                 self.consecutive_denials = 0
                 return {"behavior": "allow", "reason": f"Matched rule: {rule}"}
-        # Step 4: Ask user
+        # Step 4: Ask user (via LangGraph interrupt)
         return {"behavior": "ask", "reason": f"No rule for {tool_name}, asking user"}
 
-    def ask_user(self, tool_name: str, tool_input: dict) -> bool:
-        preview = json.dumps(tool_input, ensure_ascii=False)[:200]
-        print(f"\n  [Permission] {tool_name}: {preview}")
-        try:
-            answer = input("  Allow? (y/n/always): ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return False
-        if answer == "always":
-            self.rules.append({"tool": tool_name, "path": "*", "behavior": "allow"})
-            self.consecutive_denials = 0
-            return True
-        if answer in ("y", "yes"):
-            self.consecutive_denials = 0
-            return True
+    def add_rule(self, tool_name: str):
+        """Add a permanent allow rule for a tool."""
+        self.rules.append({"tool": tool_name, "path": "*", "behavior": "allow"})
+        self.consecutive_denials = 0
+
+    def record_denial(self):
         self.consecutive_denials += 1
         if self.consecutive_denials >= self.max_consecutive_denials:
             print(f"  [{self.consecutive_denials} denials — consider /mode plan]")
-        return False
 
     def _matches(self, rule: dict, tool_name: str, tool_input: dict) -> bool:
         if rule.get("tool") and rule["tool"] != "*" and rule["tool"] != tool_name:
@@ -282,8 +275,8 @@ def agent(state: AgentState) -> dict:
 
 def tools_wrapper(state: AgentState) -> dict:
     """
-    Permission-aware tool execution.
-    Pipeline: deny_rules → mode_check → allow_rules → ask_user
+    Permission-aware tool execution with LangGraph interrupt().
+    Pipeline: deny_rules → mode_check → allow_rules → interrupt (was ask_user)
     """
     last_ai = state["messages"][-1]
     perms = PermissionManager(
@@ -303,15 +296,27 @@ def tools_wrapper(state: AgentState) -> dict:
         if decision["behavior"] == "deny":
             content = f"Permission denied: {decision['reason']}"
             print(f"  [DENIED] {name}: {decision['reason']}")
+            perms.record_denial()
             final_msgs.append(ToolMessage(content=content, tool_call_id=tid))
             continue
 
         if decision["behavior"] == "ask":
-            if not perms.ask_user(name, args):
+            # Use LangGraph interrupt() instead of blocking input()
+            preview = json.dumps(args, ensure_ascii=False)[:200]
+            user_choice = interrupt(
+                f"[Permission] {name}: {preview}\n  Allow? (y/n/always): "
+            )
+            # user_choice is a dict: {"approved": bool, "add_rule": bool}
+            if not user_choice.get("approved"):
                 content = f"Permission denied by user for {name}"
                 print(f"  [USER DENIED] {name}")
+                perms.record_denial()
                 final_msgs.append(ToolMessage(content=content, tool_call_id=tid))
                 continue
+            if user_choice.get("add_rule"):
+                perms.add_rule(name)
+                print(f"  [Rule added: always allow {name}]")
+            perms.consecutive_denials = 0
 
         # -- Execute tool --
         tool_fn = TOOL_BY_NAME.get(name)
@@ -325,7 +330,6 @@ def tools_wrapper(state: AgentState) -> dict:
 
         print(f"> {name}: {str(content)[:200]}")
 
-        # handle set_mode
         if name == "set_mode":
             new_mode = args.get("mode", "")
             if new_mode in MODES:
@@ -354,10 +358,9 @@ graph.add_node("tools", tools_wrapper)
 graph.set_entry_point("agent")
 graph.add_conditional_edges("agent", route_agent, {"tools": "tools", END: END})
 graph.add_edge("tools", "agent")
-app = graph.compile()
+app = graph.compile(checkpointer=MemorySaver())
 
 if __name__ == "__main__":
-    # Choose permission mode at startup
     print(f"Permission modes: {', '.join(MODES)}")
     mode_input = input("Mode (default): ").strip().lower() or "default"
     if mode_input not in MODES:
@@ -370,9 +373,9 @@ if __name__ == "__main__":
         "permission_rules": list(DEFAULT_RULES),
         "consecutive_denials": 0,
     }
+    config = {"configurable": {"thread_id": "session_1"}}
 
     while (q := input("\033[36ms07 >> \033[0m")) not in ("q", "exit", ""):
-        # /mode command
         if q.startswith("/mode"):
             parts = q.split()
             if len(parts) == 2 and parts[1] in MODES:
@@ -381,11 +384,40 @@ if __name__ == "__main__":
             else:
                 print(f"Usage: /mode <{'|'.join(MODES)}>")
             continue
-        # /rules command
         if q.strip() == "/rules":
             for i, rule in enumerate(state["permission_rules"]):
                 print(f"  {i}: {rule}")
             continue
+
         state["messages"].append(HumanMessage(content=q))
-        state = app.invoke(state)
+
+        # Stream with interrupt handling
+        stream_input = state
+        while True:
+            interrupted = False
+            for event in app.stream(stream_input, config):
+                if "__interrupt__" in event:
+                    interrupted = True
+                    for info in event["__interrupt__"]:
+                        print(f"\n  {info.value}", end="")
+                        try:
+                            answer = input().strip().lower()
+                        except (EOFError, KeyboardInterrupt):
+                            answer = "n"
+                        stream_input = Command(
+                            resume={
+                                "approved": answer in ("y", "yes", "always"),
+                                "add_rule": answer == "always",
+                            }
+                        )
+                        break  # handle one interrupt at a time
+                    break  # re-enter stream loop with resume
+            if not interrupted:
+                break  # graph completed
+
+        # Sync state back from checkpointer
+        snapshot = app.get_state(config)
+        if snapshot and snapshot.values:
+            state.update(snapshot.values)
+
         print()
