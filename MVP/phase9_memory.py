@@ -57,7 +57,8 @@ API_KEY = os.getenv("AGENCY_LLM_API_KEY")
 PROVIDER = os.getenv("AGENCY_LLM_PROVIDER", "openai")
 
 WORKDIR = Path.cwd()
-MEMORY_DIR = WORKDIR / ".memory"
+LLM_DIR = WORKDIR / ".mini-agent-cli"
+MEMORY_DIR = LLM_DIR / ".memory"
 MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
 MEMORY_TYPES = ("user", "feedback", "project", "reference")
 MAX_INDEX_LINES = 200
@@ -236,21 +237,116 @@ class DreamConsolidator:
             return False, "lock held by another process"
         return True, "all gates passed"
 
-    def consolidate(self) -> list[str]:
+    def consolidate(self) -> dict:
+        """Run the 4-phase consolidation. Returns summary dict."""
         can_run, reason = self.should_consolidate()
         if not can_run:
             print(f"[Dream] Cannot consolidate: {reason}")
-            return []
+            return {"ran": False, "reason": reason}
+
         print("[Dream] Starting consolidation...")
         self.last_scan_time = time.time()
-        completed = []
-        for i, phase in enumerate(self.PHASES, 1):
-            print(f"[Dream] Phase {i}/4: {phase}")
-            completed.append(phase)
+        summary = {"ran": True, "merged": 0, "deleted": 0, "kept": 0}
+
+        # Phase 1-2: Gather all memories
+        memory_files = [
+            f for f in self.memory_dir.glob("*.md") if f.name != "MEMORY.md"
+        ]
+        all_memories = {}
+        for mf in memory_files:
+            parsed = memory_mgr._parse_frontmatter(mf.read_text())
+            if parsed:
+                all_memories[mf.name] = parsed
+        print(f"[Dream] Phase 1-2: gathered {len(all_memories)} memories")
+
+        if not all_memories:
+            self._release_lock()
+            return summary
+
+        # Phase 3: LLM consolidation
+        print("[Dream] Phase 3: analyzing for duplicates/contradictions...")
+        memories_text = json.dumps(
+            {
+                k: {
+                    "description": v.get("description", ""),
+                    "type": v.get("type", ""),
+                    "content": v.get("content", "")[:500],
+                }
+                for k, v in all_memories.items()
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+        prompt = (
+            "You are maintaining a memory store. Analyze these memories and "
+            "identify:\n"
+            "1. Duplicates to merge (same concept, different names)\n"
+            "2. Contradictions to resolve (conflicting advice)\n"
+            "3. Obsolete entries to delete (no longer relevant)\n\n"
+            f"Memories:\n{memories_text}\n\n"
+            'Return JSON: {"actions": [{"action": "merge|delete|keep", '
+            '"files": ["file1.md", ...], "new_name": "...", '
+            '"new_description": "...", "new_type": "user|feedback|project|reference", '
+            '"new_content": "..."}]}\n'
+            "Rules: max 2000 chars total for new_content. "
+            "Only flag real problems, don't over-merge."
+        )
+
+        try:
+            llm = _model()
+            response = llm.invoke([HumanMessage(content=prompt)])
+            plan = json.loads(
+                response.content.strip()
+                .replace("```json", "")
+                .replace("```", "")
+                .strip()
+            )
+        except Exception as e:
+            print(f"[Dream] LLM analysis failed: {e}")
+            self._release_lock()
+            return summary
+
+        # Phase 4: Apply changes
+        print("[Dream] Phase 4: applying changes...")
+        for action in plan.get("actions", []):
+            act = action.get("action", "keep")
+            files = action.get("files", [])
+
+            if act == "merge":
+                for f in files:
+                    fp = self.memory_dir / f
+                    if fp.exists():
+                        fp.unlink()
+                        summary["deleted"] += 1
+                memory_mgr.save_memory(
+                    action.get("new_name", "merged"),
+                    action.get("new_description", ""),
+                    action.get("new_type", "project"),
+                    action.get("new_content", ""),
+                )
+                summary["merged"] += 1
+                print(f"  [Dream] merged {files} → {action.get('new_name')}")
+
+            elif act == "delete":
+                for f in files:
+                    fp = self.memory_dir / f
+                    if fp.exists():
+                        fp.unlink()
+                        summary["deleted"] += 1
+                print(f"  [Dream] deleted {files}")
+
+            elif act == "keep":
+                summary["kept"] += len(files)
+
+        memory_mgr.load_all()  # reload after changes
         self.last_consolidation_time = time.time()
         self._release_lock()
-        print(f"[Dream] Consolidation complete: {len(completed)} phases")
-        return completed
+        print(
+            f"[Dream] Done: {summary['merged']} merged, "
+            f"{summary['deleted']} deleted, {summary['kept']} kept"
+        )
+        return summary
 
     def _acquire_lock(self) -> bool:
         if self.lock_file.exists():
@@ -437,4 +533,5 @@ if __name__ == "__main__":
     while (q := input("\033[36ms09 >> \033[0m")) not in ("q", "exit", ""):
         state["messages"].append(HumanMessage(content=q))
         state = app.invoke(state)
+        dream.consolidate()  # 每次结束后检查，门控防止频繁执行
         print()
