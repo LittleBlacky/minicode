@@ -145,7 +145,7 @@ def _model():
 
 
 def _compact_summary(messages):
-    conv = json.dumps([m.dict() for m in messages])[:80000]
+    conv = json.dumps([m.model_dump() for m in messages])[:80000]
     prompt = (
         "Summarize this coding-agent conversation so work can continue.\n"
         "Preserve: 1. Goal 2. Findings/decisions 3. Files read/changed 4. Remaining work 5. User constraints.\n\n"
@@ -165,7 +165,7 @@ def _compact_history(messages: list, state: AgentState, focus: str = None) -> li
     TRANSCRIPT_DIR.mkdir(exist_ok=True)
     with path.open("w") as h:
         for m in messages:
-            h.write(json.dumps(m.dict(), default=str) + "\n")
+            h.write(json.dumps(m.model_dump(), default=str) + "\n")
     print(f"[transcript saved: {path}]")
     summary = _compact_summary(messages)
     if focus:
