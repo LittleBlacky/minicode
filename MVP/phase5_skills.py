@@ -225,7 +225,7 @@ def execute_tools(state: AgentState):
         tool_messages.append(
             ToolMessage(content=str(output), tool_call_id=tool_call["id"])
         )
-        return {"messages": tool_messages}
+    return {"messages": tool_messages}
 
 
 def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
