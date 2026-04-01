@@ -1,12 +1,33 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 phase14_background_tasks.py - Background Tasks
 
 Run slow commands in background threads. Before each LLM call, the loop
 drains a notification queue and hands finished results back to the model.
 
-Background tasks here are runtime execution slots, not the durable task-board
-records from phase13.
+Key insight: "Background execution allows the agent to think while waiting."
+
+    Main thread                Background thread
+    +-----------------+        +-----------------+
+    | agent loop      |        | task executes   |
+    | ...             |        | ...             |
+    | [LLM call] <---+------- | enqueue(result) |
+    |  ^drain queue   |        +-----------------+
+    +-----------------+
+
+Timeline:
+Agent ----[spawn A]----[spawn B]----[other work]----
+             |              |
+             v              v
+          [A runs]      [B runs]
+             |              |
+             +-- notification queue --> [results injected]
+
+LangGraph concepts:
+- Use a BackgroundManager for thread-based task execution
+- NotificationQueue for priority-based message delivery
+- Periodic polling to check for completed background tasks
 """
 import json
 import os
@@ -35,9 +56,10 @@ API_KEY = os.getenv("AGENCY_LLM_API_KEY")
 PROVIDER = os.getenv("AGENCY_LLM_PROVIDER", "openai")
 
 WORKDIR = Path.cwd()
-LLM_DIR = WORKDIR / ".mini-agent-cli"
-RUNTIME_DIR = LLM_DIR / ".runtime-tasks"
+RUNTIME_DIR = WORKDIR / ".runtime-tasks"
 RUNTIME_DIR.mkdir(exist_ok=True)
+
+STALL_THRESHOLD_S = 45  # seconds before a task is considered stalled
 
 model = init_chat_model(
     MODEL_ID,
@@ -49,19 +71,26 @@ model = init_chat_model(
 )
 
 
+# ========== NotificationQueue ==========
+
 class NotificationQueue:
-    """Priority-based notification queue with same-key folding."""
+    """
+    Priority-based notification queue with same-key folding.
+    Folding means a newer message can replace an older message with the
+    same key, so the context is not flooded with stale updates.
+    """
 
     PRIORITIES = {"immediate": 0, "high": 1, "medium": 2, "low": 3}
 
     def __init__(self):
-        self._queue = []
+        self._queue = []  # list of (priority, key, message)
         self._lock = threading.Lock()
 
     def push(self, message: str, priority: str = "medium", key: str = None):
         """Add a message to the queue, folding if key matches an existing entry."""
         with self._lock:
             if key:
+                # Fold: replace existing message with same key
                 self._queue = [(p, k, m) for p, k, m in self._queue if k != key]
             self._queue.append((self.PRIORITIES.get(priority, 2), key, message))
             self._queue.sort(key=lambda x: x[0])
@@ -74,12 +103,18 @@ class NotificationQueue:
             return messages
 
 
+# ========== BackgroundManager ==========
+
 class BackgroundManager:
-    """Threaded execution + notification queue."""
+    """
+    Threaded execution + notification queue for background tasks.
+    Background tasks are runtime execution slots, not the durable task-board
+    records from phase13.
+    """
 
     def __init__(self):
         self.dir = RUNTIME_DIR
-        self.tasks = {}
+        self.tasks = {}  # task_id -> {status, result, command, started_at}
         self._notification_queue = NotificationQueue()
         self._lock = threading.Lock()
 
@@ -137,35 +172,39 @@ class BackgroundManager:
             output = (r.stdout + r.stderr).strip()[:50000]
             status = "completed"
         except subprocess.TimeoutExpired:
-            output = "Error: Timeout (300s)"
+            output = "[Error]: Timeout (300s)"
             status = "timeout"
         except Exception as e:
-            output = f"Error: {e}"
+            output = f"[Error]: {e}"
             status = "error"
-
         final_output = output or "(no output)"
         preview = self._preview(final_output)
         output_path = self._output_path(task_id)
         output_path.write_text(final_output)
-
         self.tasks[task_id]["status"] = status
         self.tasks[task_id]["result"] = final_output
         self.tasks[task_id]["finished_at"] = time.time()
         self.tasks[task_id]["result_preview"] = preview
         self._persist_task(task_id)
-
-        self._notification_queue.push(
-            f"[bg:{task_id}] {status}: {preview}",
-            priority="medium",
-            key=task_id,
-        )
+        with self._lock:
+            self._notification_queue.push(
+                {
+                    "task_id": task_id,
+                    "status": status,
+                    "command": command[:80],
+                    "preview": preview,
+                    "output_file": str(output_path.relative_to(WORKDIR)),
+                },
+                priority="medium",
+                key=task_id,
+            )
 
     def check(self, task_id: str = None) -> str:
         """Check status of one task or list all."""
         if task_id:
             t = self.tasks.get(task_id)
             if not t:
-                return f"Error: Unknown task {task_id}"
+                return f"[Error]: Unknown task {task_id}"
             visible = {
                 "id": t["id"],
                 "status": t["status"],
@@ -174,7 +213,6 @@ class BackgroundManager:
                 "output_file": t.get("output_file", ""),
             }
             return json.dumps(visible, indent=2, ensure_ascii=False)
-
         lines = []
         for tid, t in self.tasks.items():
             lines.append(
@@ -187,53 +225,73 @@ class BackgroundManager:
         """Return and clear all pending completion notifications."""
         return self._notification_queue.drain()
 
-    def detect_stalled(self, threshold: float = 45.0) -> list[str]:
-        """Return task IDs that have been running longer than threshold."""
+    def detect_stalled(self) -> list[str]:
+        """
+        Return task IDs that have been running longer than STALL_THRESHOLD_S.
+        """
         now = time.time()
         stalled = []
         for task_id, info in self.tasks.items():
             if info["status"] != "running":
                 continue
             elapsed = now - info.get("started_at", now)
-            if elapsed > threshold:
+            if elapsed > STALL_THRESHOLD_S:
                 stalled.append(task_id)
         return stalled
 
 
+# Global background manager instance
 BG = BackgroundManager()
 
 
-def _safe(p: str) -> Path:
-    p = (WORKDIR / p).resolve()
+# ========== Agent State ==========
+
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+    background_notifications: list[str]
+    last_tool_result: Optional[str]
+
+
+# ========== Tool Functions ==========
+
+def safe_path(path: str) -> Path:
+    """Resolve path relative to workspace."""
+    p = (WORKDIR / path).resolve()
     if not p.is_relative_to(WORKDIR):
-        raise ValueError(p)
+        raise ValueError(f"Path escapes workspace: {path}")
     return p
 
 
 @tool
-def bash(command: str) -> str:
-    """Run a shell command (blocking)."""
+def bash_tool(command: str) -> str:
+    """Run a shell command in the workspace (blocking)."""
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
-    if any(item in command for item in dangerous):
+    if any(d in command for d in dangerous):
         return "[Error]: Dangerous command blocked"
     try:
         r = subprocess.run(
-            command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=120
+            command,
+            shell=True,
+            cwd=WORKDIR,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
+        out = (r.stdout + r.stderr).strip()
+        return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
         return "[Error]: Timeout (120s)"
-    return (r.stdout + r.stderr).strip() or "(no output)"
 
 
 @tool
 def read_file(path: str, limit: Optional[int] = None) -> str:
     """Read file contents."""
     try:
-        p = _safe(path)
-        lines = p.read_text().splitlines()
+        text = safe_path(path).read_text()
+        lines = text.splitlines()
         if limit and limit < len(lines):
-            lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
-        return "\n".join(lines)
+            lines = lines[:limit] + [f"...({len(lines) - limit} more)"]
+        return "\n".join(lines)[:50000]
     except Exception as e:
         return f"[Error]: {e}"
 
@@ -242,23 +300,23 @@ def read_file(path: str, limit: Optional[int] = None) -> str:
 def write_file(path: str, content: str) -> str:
     """Write content to a file."""
     try:
-        f = _safe(path)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(content)
-        return f"Wrote {len(content)} bytes to {path}"
+        fp = safe_path(path)
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(content)
+        return f"Wrote {len(content)} bytes"
     except Exception as e:
         return f"[Error]: {e}"
 
 
 @tool
 def edit_file(path: str, old_text: str, new_text: str) -> str:
-    """Replace exact text in a file once."""
+    """Replace exact text in a file."""
     try:
-        f = _safe(path)
-        content = f.read_text()
-        if old_text not in content:
+        fp = safe_path(path)
+        c = fp.read_text()
+        if old_text not in c:
             return f"[Error]: Text not found in {path}"
-        f.write_text(content.replace(old_text, new_text, 1))
+        fp.write_text(c.replace(old_text, new_text, 1))
         return f"Edited {path}"
     except Exception as e:
         return f"[Error]: {e}"
@@ -276,67 +334,96 @@ def check_background(task_id: Optional[str] = None) -> str:
     return BG.check(task_id)
 
 
-ALL_TOOLS = [bash, read_file, write_file, edit_file, background_run, check_background]
-tool_node = ToolNode(ALL_TOOLS, handle_tool_errors=True)
-model_with_tools = model.bind_tools(ALL_TOOLS)
+# Define tool list and tool node
+agent_tools = [bash_tool, read_file, write_file, edit_file, background_run, check_background]
+tool_node = ToolNode(agent_tools, handle_tool_errors=True)
+model_with_tools = model.bind_tools(agent_tools)
 
 
-class AgentState(TypedDict):
-    messages: Annotated[list, add_messages]
+# ========== Graph Nodes ==========
 
+SYSTEM_PROMPT = f"""You are a coding agent at {WORKDIR}. Use background_run for long-running commands.
 
-SYSTEM = f"You are a coding agent at {WORKDIR}. Use background_run for long-running commands."
+Available background operations:
+- background_run(command): Run command in background, returns task_id immediately
+- check_background(task_id): Check task status (omit task_id to list all)
+
+Background tasks run in separate threads and notify when complete.
+"""
 
 
 def call_model(state: AgentState) -> dict:
-    """Stream model responses with notification injection."""
-    messages_with_system = [SystemMessage(content=SYSTEM)] + state["messages"]
+    """Call the model with current messages, draining background notifications."""
+    messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
 
+    # Inject background notifications if any
     notifs = BG.drain_notifications()
-    if notifs and messages_with_system:
-        notif_text = "\n".join(notifs)
-        messages_with_system.append(
+    if notifs:
+        notif_text = "\n".join(
+            f"[bg:{n['task_id']}] {n['status']}: {n['preview']} "
+            f"(output_file={n['output_file']})"
+            for n in notifs
+        )
+        messages.append(
             HumanMessage(content=f"<background-results>\n{notif_text}\n</background-results>")
         )
 
-    response = model_with_tools.invoke(messages_with_system)
-    return {"messages": [response]}
+    response = model_with_tools.invoke(messages)
+    return {"messages": [response], "last_tool_result": None, "background_notifications": []}
 
 
 def should_continue(state: AgentState) -> Literal["tools", END]:
-    """Decide whether to continue tool execution or finish."""
+    """Check if there are tool calls to execute."""
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tools"
     return END
 
 
+# Build the graph
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
 
 workflow.add_edge(START, "agent")
-workflow.add_conditional_edges("agent", should_continue)
 workflow.add_edge("tools", "agent")
+workflow.add_conditional_edges(
+    "agent",
+    should_continue,
+    {"tools": "tools", END: END}
+)
 
 graph = workflow.compile()
 
 
+def run_agent(query: str):
+    """Run the agent with a query."""
+    initial_state = {
+        "messages": [HumanMessage(content=query)],
+        "background_notifications": [],
+        "last_tool_result": None,
+    }
+
+    for event in graph.stream(initial_state):
+        node_name = list(event.keys())[0]
+        if node_name == "agent":
+            response = event[node_name]["messages"][-1]
+            if hasattr(response, 'content') and response.content:
+                print(f"\nAssistant: {response.content}")
+        elif node_name == "tools":
+            pass  # Tools handled internally
+
+
 if __name__ == "__main__":
-    print("[Background tasks enabled: use background_run for long commands]")
-    state: AgentState = {"messages": []}
+    print("Background Tasks Agent (phase14)")
+    print("Use background_run for long-running commands")
+    print("Type 'exit' or 'q' to quit\n")
 
     while True:
         try:
-            q = input("\033[36mphase14 >> \033[0m")
+            query = input("\033[36mphase14 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
-        if q.strip().lower() in ("q", "exit", ""):
+        if query.strip().lower() in ("q", "exit", ""):
             break
-        if q.strip() == "/bg":
-            print(BG.check())
-            continue
-
-        state["messages"].append(HumanMessage(content=q))
-        state = graph.invoke(state)
-        print()
+        run_agent(query)
