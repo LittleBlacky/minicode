@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 """
-phase15_cron_scheduler.py - Cron / Scheduled Tasks
+phase15_cron_scheduler.py - Cron / Scheduled Tasks with LangGraph Native Patterns
 
 The agent can schedule prompts for future execution using standard cron
 expressions. When a schedule matches the current time, it pushes a
@@ -21,10 +21,10 @@ notification back into the main conversation loop.
 Key insight: Scheduling remembers future work, then hands it back to
 the same main loop when the time arrives.
 
-LangGraph concepts:
-- Use StateGraph with scheduled tasks state
-- Background thread for cron checking
-- Notification injection into conversation state
+LangGraph native patterns:
+- MemorySaver checkpointer for session persistence
+- State updates for scheduled task injection
+- Interrupt-based task cancellation
 """
 import json
 import os
@@ -41,6 +41,7 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -287,11 +288,13 @@ class CronScheduler:
 scheduler = CronScheduler()
 
 
-# ========== Agent State ==========
+# ========== Agent State (LangGraph Native) ==========
 
 class AgentState(TypedDict):
+    """Agent state with langgraph native checkpoint support."""
     messages: Annotated[list, add_messages]
-    scheduled_notifications: list[str]
+    scheduled_notifications: list[str]  # LangGraph native: state-based notification tracking
+    active_schedules: list[dict]  # LangGraph native: track active scheduled tasks in state
 
 
 # ========== Tool Functions ==========
@@ -421,7 +424,8 @@ Scheduled tasks fire automatically and their prompts are injected into the conve
 
 
 def call_model(state: AgentState) -> dict:
-    """Call the model with current messages, draining scheduled notifications."""
+    """Call the model with current messages, draining scheduled notifications.
+    LangGraph native: uses state for notification injection."""
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
 
     # Drain scheduled task notifications
@@ -432,7 +436,7 @@ def call_model(state: AgentState) -> dict:
             messages.append(HumanMessage(content=note))
 
     response = model_with_tools.invoke(messages)
-    return {"messages": [response]}
+    return {"messages": [response], "scheduled_notifications": []}
 
 
 def should_continue(state: AgentState) -> Literal["tools", END]:
@@ -443,7 +447,7 @@ def should_continue(state: AgentState) -> Literal["tools", END]:
     return END
 
 
-# Build the graph
+# Build the graph with checkpoint (LangGraph native)
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
@@ -456,17 +460,32 @@ workflow.add_conditional_edges(
     {"tools": "tools", END: END}
 )
 
-graph = workflow.compile()
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+graph = workflow.compile(checkpointer=checkpointer)
 
 
-def run_agent(query: str):
-    """Run the agent with a query."""
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def run_agent(query: str, thread_id: str = "cron_session_1") -> dict:
+    """Run the agent with checkpoint support for session persistence."""
+    config = get_session_config(thread_id)
+
+    # Check for existing state
+    existing = graph.get_state(config)
+    existing_msgs = existing.values.get("messages", []) if existing else []
+    existing_schedules = existing.values.get("active_schedules", []) if existing else []
+
     initial_state = {
         "messages": [HumanMessage(content=query)],
         "scheduled_notifications": [],
+        "active_schedules": existing_schedules,
     }
 
-    for event in graph.stream(initial_state):
+    for event in graph.stream(initial_state, config):
         node_name = list(event.keys())[0]
         if node_name == "agent":
             response = event[node_name]["messages"][-1]
@@ -478,13 +497,21 @@ def run_agent(query: str):
 
 if __name__ == "__main__":
     scheduler.start()
-    print("Cron Scheduler Agent (phase15)")
-    print("Use cron_create to schedule future work")
-    print("Type 'exit' or 'q' to quit\n")
+    print("Cron Scheduler Agent (phase15) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, state-based scheduling")
+    print("Type 'exit' or 'q' to quit, '/cron' to list scheduled tasks\n")
+
+    thread_id = "cron_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint
+    existing = graph.get_state(config)
+    if existing and existing.values.get("messages"):
+        print(f"[Resuming session with {len(existing.values['messages'])} messages]\n")
 
     while True:
         try:
-            query = input("\033[36mphase15 >> \033[0m")
+            query = input(f"\033[36m{thread_id} >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             scheduler.stop()
             break
@@ -494,4 +521,4 @@ if __name__ == "__main__":
         if query.strip() == "/cron":
             print(scheduler.list_tasks())
             continue
-        run_agent(query)
+        run_agent(query, thread_id)
