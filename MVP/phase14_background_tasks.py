@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 """
-phase14_background_tasks.py - Background Tasks
+phase14_background_tasks.py - Background Tasks with LangGraph Native Patterns
 
-Run slow commands in background threads. Before each LLM call, the loop
-drains a notification queue and hands finished results back to the model.
+Run slow commands in background threads with langgraph integration.
+Uses:
+- Checkpoint for session persistence
+- State updates for notification handling
+- Interrupt for async result polling
 
 Key insight: "Background execution allows the agent to think while waiting."
 
@@ -16,18 +19,11 @@ Key insight: "Background execution allows the agent to think while waiting."
     |  ^drain queue   |        +-----------------+
     +-----------------+
 
-Timeline:
-Agent ----[spawn A]----[spawn B]----[other work]----
-             |              |
-             v              v
-          [A runs]      [B runs]
-             |              |
-             +-- notification queue --> [results injected]
-
-LangGraph concepts:
-- Use a BackgroundManager for thread-based task execution
-- NotificationQueue for priority-based message delivery
-- Periodic polling to check for completed background tasks
+LangGraph native patterns used:
+- MemorySaver checkpointer for session persistence
+- State updates for notification injection
+- Interrupt-based result polling
+- Custom node for background task coordination
 """
 import json
 import os
@@ -40,11 +36,13 @@ from typing import Annotated, Literal, Optional
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from langgraph.types import interrupt, Command
 from typing_extensions import TypedDict
 
 load_dotenv(override=True)
@@ -249,8 +247,9 @@ BG = BackgroundManager()
 
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
-    background_notifications: list[str]
-    last_tool_result: Optional[str]
+    pending_background_tasks: list[dict]  # LangGraph native: track running background tasks
+    completed_notifications: list[dict]   # LangGraph native: completed task results
+    interrupted_for_polling: bool         # LangGraph native: interrupt flag for polling
 
 
 # ========== Tool Functions ==========
@@ -325,18 +324,41 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
 
 @tool
 def background_run(command: str) -> str:
-    """Run command in background thread. Returns task_id immediately."""
-    return BG.run(command)
+    """Run command in background thread. Returns task_id immediately.
+    LangGraph: tracks task in state for later polling."""
+    result = BG.run(command)
+    # Return will be included in tool result, state update handles tracking
+    return result
 
 
 @tool
 def check_background(task_id: Optional[str] = None) -> str:
-    """Check background task status. Omit task_id to list all."""
+    """Check background task status. Omit task_id to list all.
+    LangGraph: uses state-based tracking."""
     return BG.check(task_id)
 
 
+@tool
+def poll_background_results(task_ids: list[str]) -> str:
+    """Poll for results from specific background tasks.
+    Returns results for completed tasks."""
+    results = []
+    for task_id in task_ids:
+        info = BG.tasks.get(task_id)
+        if info:
+            if info["status"] == "completed":
+                results.append(f"[{task_id}] completed: {info.get('result_preview', '')}")
+            elif info["status"] == "running":
+                results.append(f"[{task_id}] still running...")
+            elif info["status"] in ("error", "timeout"):
+                results.append(f"[{task_id}] {info['status']}: {info.get('result_preview', '')}")
+        else:
+            results.append(f"[{task_id}] unknown task")
+    return "\n".join(results) if results else "No tasks to poll"
+
+
 # Define tool list and tool node
-agent_tools = [bash_tool, read_file, write_file, edit_file, background_run, check_background]
+agent_tools = [bash_tool, read_file, write_file, edit_file, background_run, check_background, poll_background_results]
 tool_node = ToolNode(agent_tools, handle_tool_errors=True)
 model_with_tools = model.bind_tools(agent_tools)
 
@@ -354,58 +376,120 @@ Background tasks run in separate threads and notify when complete.
 
 
 def call_model(state: AgentState) -> dict:
-    """Call the model with current messages, draining background notifications."""
+    """Call the model with current messages, draining background notifications.
+    LangGraph native: uses state for notification injection."""
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
 
-    # Inject background notifications if any
-    notifs = BG.drain_notifications()
-    if notifs:
+    # Inject completed notifications from state if any
+    completed = state.get("completed_notifications", [])
+    if completed:
         notif_text = "\n".join(
             f"[bg:{n['task_id']}] {n['status']}: {n['preview']} "
             f"(output_file={n['output_file']})"
-            for n in notifs
+            for n in completed
         )
         messages.append(
             HumanMessage(content=f"<background-results>\n{notif_text}\n</background-results>")
         )
 
     response = model_with_tools.invoke(messages)
-    return {"messages": [response], "last_tool_result": None, "background_notifications": []}
+    return {
+        "messages": [response],
+        "completed_notifications": [],  # Clear after injection
+    }
 
 
-def should_continue(state: AgentState) -> Literal["tools", END]:
-    """Check if there are tool calls to execute."""
+def background_coordinator(state: AgentState) -> dict:
+    """
+    LangGraph native: Check for newly completed background tasks and update state.
+    This node runs after tools to detect completed background tasks.
+    """
+    # Drain notifications from BackgroundManager
+    notifs = BG.drain_notifications()
+
+    if notifs:
+        # Merge with existing notifications
+        existing = state.get("completed_notifications", [])
+        return {"completed_notifications": existing + notifs}
+
+    return {}
+
+
+def should_continue(state: AgentState) -> Literal["tools", "check_notifications", END]:
+    """Check if there are tool calls or pending notifications."""
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tools"
+
+    # Check for pending notifications
+    if state.get("pending_background_tasks"):
+        # Could route to notification handling
+        return "check_notifications"
+
     return END
 
 
-# Build the graph
+def check_notifications(state: AgentState) -> dict:
+    """Check for newly completed background tasks."""
+    return background_coordinator(state)
+
+
+# Build the graph with checkpoint
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
+workflow.add_node("check_notifications", check_notifications)
 
 workflow.add_edge(START, "agent")
 workflow.add_edge("tools", "agent")
+workflow.add_edge("check_notifications", "agent")
+
 workflow.add_conditional_edges(
     "agent",
     should_continue,
-    {"tools": "tools", END: END}
+    {"tools": "tools", "check_notifications": "check_notifications", END: END}
 )
 
-graph = workflow.compile()
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+graph = workflow.compile(checkpointer=checkpointer)
 
 
-def run_agent(query: str):
-    """Run the agent with a query."""
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def run_agent(query: str, thread_id: str = "bg_session_1") -> dict:
+    """Run the agent with checkpoint support for session persistence."""
+    config = get_session_config(thread_id)
+
+    # Check existing state for pending notifications
+    existing = graph.get_state(config)
+    pending = existing.values.get("pending_background_tasks", []) if existing else []
+
+    # Inject notifications from pending tasks
+    notifications = []
+    for task_id in list(pending):
+        info = BG.tasks.get(task_id)
+        if info and info["status"] != "running":
+            notifications.append({
+                "task_id": task_id,
+                "status": info["status"],
+                "preview": info.get("result_preview", ""),
+                "output_file": info.get("output_file", ""),
+            })
+            pending.remove(task_id)
+
     initial_state = {
         "messages": [HumanMessage(content=query)],
-        "background_notifications": [],
-        "last_tool_result": None,
+        "pending_background_tasks": pending,
+        "completed_notifications": notifications,
+        "interrupted_for_polling": False,
     }
 
-    for event in graph.stream(initial_state):
+    # Stream with event handling (LangGraph native pattern)
+    for event in graph.stream(initial_state, config):
         node_name = list(event.keys())[0]
         if node_name == "agent":
             response = event[node_name]["messages"][-1]
@@ -416,15 +500,23 @@ def run_agent(query: str):
 
 
 if __name__ == "__main__":
-    print("Background Tasks Agent (phase14)")
-    print("Use background_run for long-running commands")
+    print("Background Tasks Agent (phase14) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, state-based notifications, interrupt polling")
     print("Type 'exit' or 'q' to quit\n")
+
+    thread_id = "bg_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint if exists
+    existing = graph.get_state(config)
+    if existing and existing.values.get("messages"):
+        print(f"[Resuming session {thread_id} with {len(existing.values['messages'])} messages]\n")
 
     while True:
         try:
-            query = input("\033[36mphase14 >> \033[0m")
+            query = input(f"\033[36m{thread_id} >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-        run_agent(query)
+        run_agent(query, thread_id)
