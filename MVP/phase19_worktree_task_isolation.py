@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 """
-phase19_worktree_task_isolation.py - Worktree + Task Isolation
+phase19_worktree_task_isolation.py - Worktree + Task Isolation with LangGraph Native Patterns
 
 Directory-level isolation for parallel task execution.
 Tasks are the control plane and worktrees are the execution plane.
@@ -28,10 +28,10 @@ Tasks are the control plane and worktrees are the execution plane.
 
 Key insight: "Isolate by directory, coordinate by task ID."
 
-LangGraph concepts:
-- Use EventBus for worktree lifecycle observability
-- TaskManager with worktree binding
-- Worktree registry for directory isolation
+LangGraph native patterns:
+- MemorySaver checkpointer for session persistence
+- State updates for worktree lifecycle tracking
+- Event state for lifecycle observability
 """
 import json
 import os
@@ -45,6 +45,7 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -414,10 +415,14 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
         return f"[Error]: {e}"
 
 
-# ========== Agent State ==========
+# ========== Agent State (LangGraph Native) ==========
 
 class AgentState(TypedDict):
+    """Agent state with langgraph native checkpoint support."""
     messages: Annotated[list, add_messages]
+    # LangGraph native: state-based tracking for worktree lifecycle
+    worktree_events: list[dict]  # Recent worktree lifecycle events
+    active_worktrees: list[str]  # Track active worktree names
 
 
 # ========== Tool Functions ==========
@@ -560,35 +565,77 @@ SYSTEM_PROMPT = f"""You are a coding agent at {WORKDIR}. Use task + worktree too
 For parallel or risky changes: create tasks, allocate worktree lanes, run commands in those lanes, then choose keep/remove for closeout.
 
 Key insight: "Isolate by directory, coordinate by task ID."
+
+LangGraph native features:
+- Session persistence via checkpoint
+- State-based worktree lifecycle tracking
+- Event injection for observability
 """
 
 
 def call_model(state: AgentState) -> dict:
+    """Call the model with current messages.
+    LangGraph native: injects worktree events into context."""
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
+
+    # Inject recent worktree events (LangGraph native: state-based event tracking)
+    if state.get("worktree_events"):
+        events_text = "\n".join(
+            f"[{e.get('event', 'unknown')}] at {e.get('ts', 0)}" for e in state["worktree_events"][-5:]
+        )
+        messages.append(HumanMessage(content=f"<recent-worktree-events>\n{events_text}\n</recent-worktree-events>"))
+
     response = model_with_tools.invoke(messages)
     return {"messages": [response]}
 
 
 def should_continue(state: AgentState) -> Literal["tools", END]:
+    """Check if there are tool calls to execute."""
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tools"
     return END
 
 
+# Build the graph with checkpoint (LangGraph native)
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
+
 workflow.add_edge(START, "agent")
 workflow.add_edge("tools", "agent")
-workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+workflow.add_conditional_edges(
+    "agent",
+    should_continue,
+    {"tools": "tools", END: END}
+)
 
-graph = workflow.compile()
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+graph = workflow.compile(checkpointer=checkpointer)
 
 
-def run_agent(query: str):
-    initial_state = {"messages": [HumanMessage(content=query)]}
-    for event in graph.stream(initial_state):
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def run_agent(query: str, thread_id: str = "wt_session_1") -> dict:
+    """Run the agent with checkpoint support for session persistence."""
+    config = get_session_config(thread_id)
+
+    # Check for existing state
+    existing = graph.get_state(config)
+    existing_events = existing.values.get("worktree_events", []) if existing else []
+    existing_wts = existing.values.get("active_worktrees", []) if existing else []
+
+    initial_state = {
+        "messages": [HumanMessage(content=query)],
+        "worktree_events": existing_events,
+        "active_worktrees": existing_wts,
+    }
+
+    for event in graph.stream(initial_state, config):
         node_name = list(event.keys())[0]
         if node_name == "agent":
             response = event[node_name]["messages"][-1]
@@ -597,16 +644,25 @@ def run_agent(query: str):
 
 
 if __name__ == "__main__":
-    print("Worktree Task Isolation (phase19)")
+    print("Worktree Task Isolation (phase19) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, state-based worktree tracking")
     if not WORKTREES.is_available():
         print("Note: Not in a git repo. Worktree tools will create directories only.")
     print("Type 'exit' or 'q' to quit\n")
 
+    thread_id = "wt_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint
+    existing = graph.get_state(config)
+    if existing and existing.values.get("messages"):
+        print(f"[Resuming session with {len(existing.values['messages'])} messages]\n")
+
     while True:
         try:
-            query = input("\033[36mphase19 >> \033[0m")
+            query = input(f"\033[36m{thread_id} >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-        run_agent(query)
+        run_agent(query, thread_id)
