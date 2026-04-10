@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 """
-phase20_mcp_plugin.py - MCP & Plugin System
+phase20_mcp_plugin.py - MCP & Plugin System with LangGraph Native Patterns
 
 External processes can expose tools, and your agent can treat them like
 normal tools after a small amount of normalization.
@@ -18,11 +18,10 @@ external server to start.
 Key insight: "External tools should enter the same tool pipeline, not form a
 completely separate world."
 
-LangGraph concepts:
-- Use CapabilityPermissionGate for unified permission handling
-- MCPClient for stdio-based external tool exposure
-- PluginLoader for manifest-based server discovery
-- MCPToolRouter for unified tool pool
+LangGraph native patterns:
+- MemorySaver checkpointer for session persistence
+- State updates for plugin/MCP tool tracking
+- Unified permission gate integration with langgraph state
 """
 import json
 import os
@@ -35,6 +34,7 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -362,7 +362,10 @@ def normalize_tool_result(tool_name: str, output: str, intent: dict = None) -> s
 # ========== Agent State ==========
 
 class AgentState(TypedDict):
+    """Agent state with langgraph native checkpoint support."""
     messages: Annotated[list, add_messages]
+    permission_decisions: list[dict]  # LangGraph native: track permission decisions
+    tool_pool_info: dict  # LangGraph native: cache tool pool metadata
 
 
 # ========== Tool Functions (for LangGraph) ==========
@@ -401,6 +404,7 @@ SYSTEM_PROMPT = f"""You are a coding agent at {WORKDIR}. Use tools to solve task
 You have both native tools and MCP tools available.
 MCP tools are prefixed with mcp__{{server}}__{{tool}}.
 All capabilities pass through the same permission gate before execution.
+LangGraph native: Checkpoint persistence, state-based permission tracking.
 """
 
 
@@ -417,6 +421,7 @@ def should_continue(state: AgentState) -> Literal["tools", END]:
     return END
 
 
+# Build the graph with checkpoint (LangGraph native)
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
@@ -424,12 +429,25 @@ workflow.add_edge(START, "agent")
 workflow.add_edge("tools", "agent")
 workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
 
-graph = workflow.compile()
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+graph = workflow.compile(checkpointer=checkpointer)
 
 
-def run_agent_with_permission(query: str):
-    """Run agent with permission checking for tools."""
-    tools = build_tool_pool()
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def run_agent_with_permission(query: str, thread_id: str = "mcp_session_1"):
+    """Run agent with permission checking and checkpoint support."""
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint
+    existing = graph.get_state(config)
+    if existing and existing.values.get("messages"):
+        print(f"[Resuming session {thread_id} with {len(existing.values['messages'])} messages]\n")
+
     messages = [HumanMessage(content=query)]
 
     while True:
@@ -486,13 +504,22 @@ if __name__ == "__main__":
     mcp_count = len(mcp_router.get_all_tools())
     print(f"[Tool pool: {tool_count} tools ({mcp_count} from MCP)]")
 
-    print("MCP Plugin System (phase20)")
+    thread_id = "mcp_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint if exists
+    existing = graph.get_state(config)
+    if existing and existing.values.get("messages"):
+        print(f"[Resuming session {thread_id} with {len(existing.values['messages'])} messages]\n")
+
+    print("MCP Plugin System (phase20) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, unified permission gate")
     print("Use /tools to list all available tools")
     print("Type 'exit' or 'q' to quit\n")
 
     while True:
         try:
-            query = input("\033[36mphase20 >> \033[0m")
+            query = input(f"\033[36m{thread_id} >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             # Cleanup MCP connections
             for c in mcp_router.clients.values():
@@ -515,4 +542,4 @@ if __name__ == "__main__":
             else:
                 print("  (no MCP servers connected)")
             continue
-        run_agent_with_permission(query)
+        run_agent_with_permission(query, thread_id)
