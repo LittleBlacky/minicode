@@ -17,7 +17,7 @@ except ImportError:
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -82,10 +82,8 @@ class AgentState(TypedDict):
 # Graph nodes
 # ----------------------------------------------------------------------
 def call_model(state: AgentState) -> dict:
-    response = model_with_tools.invoke(
-        state["messages"],
-        config={"configurable": {"system": SYSTEM_PROMPT}},
-    )
+    messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
+    response = model_with_tools.invoke(messages)
     return {"messages": [response]}
 
 
