@@ -332,9 +332,14 @@ def get_session_config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
 
+# Track active sessions
+_active_sessions: set[str] = set()
+
+
 def run_agent(query: str, thread_id: str = "default") -> dict:
     """Run the agent with a query using checkpoint-based session."""
     config = get_session_config(thread_id)
+    _active_sessions.add(thread_id)
 
     # Check if resuming from existing session
     existing_state = graph.get_state(config)
@@ -375,9 +380,7 @@ def run_agent(query: str, thread_id: str = "default") -> dict:
 
 def list_sessions() -> list:
     """List all active sessions from checkpointer."""
-    # MemorySaver stores in memory, so we track sessions separately
-    # In production, use PostgresSaver or SqliteSaver for persistence
-    return []  # Override in subclass or extend
+    return list(_active_sessions)
 
 
 def get_session_info(thread_id: str) -> Optional[dict]:
@@ -414,11 +417,10 @@ if __name__ == "__main__":
 
         # Session commands
         if query.strip() == "/sessions":
-            # List all sessions from checkpoint storage
-            all_threads = checkpointer.storage.keys() if hasattr(checkpointer, 'storage') else []
-            if all_threads:
+            # List all sessions from active tracking
+            if _active_sessions:
                 print("Active sessions:")
-                for thread_id in all_threads:
+                for thread_id in _active_sessions:
                     info = get_session_info(thread_id)
                     if info:
                         print(f"  {thread_id}: {info['message_count']} messages")

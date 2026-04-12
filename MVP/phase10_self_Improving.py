@@ -26,6 +26,7 @@ from langchain_core.messages import (
 from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
 
 # ───────────────────────────── 环境配置 ──────────────────────────────────────
 
@@ -794,12 +795,21 @@ class SelfImprovingAgent:
             {"memory_updater": "memory_updater"},
         )
         graph.add_edge("memory_updater", END)
-        return graph.compile()
+        # Compile with checkpoint for session persistence (LangGraph native)
+        checkpointer = MemorySaver()
+        return graph.compile(checkpointer=checkpointer)
 
-    # ── 公共入口 ────────────────────────────────────────────────────────────
+    def get_session_config(self, thread_id: str = "self_improving_session_1") -> dict:
+        """LangGraph native: Get session config for checkpointing."""
+        return {"configurable": {"thread_id": thread_id}}
 
-    def run(self, task: str, task_count: int = 0) -> dict:
-        graph = self.build_graph()
+    def run(self, task: str, task_count: int = 0, config: dict = None) -> dict:
+        """Run the agent with optional checkpoint config."""
+        # Cache the compiled graph for efficiency
+        if not hasattr(self, '_compiled_graph'):
+            self._compiled_graph = self.build_graph()
+
+        graph = self._compiled_graph
         initial: AgentState = {
             "task": task,
             "task_type": "",
@@ -812,6 +822,8 @@ class SelfImprovingAgent:
             "should_update_memory": False,
             "task_count": task_count,
         }
+        if config:
+            return graph.invoke(initial, config)
         return graph.invoke(initial)
 
 
@@ -822,9 +834,20 @@ class SelfImprovingAgent:
 if __name__ == "__main__":
     print("=" * 60)
     print("  Self-Improving Agent  (输入 q 或 exit 退出)")
+    print("  LangGraph Native Patterns - Checkpoint Persistence")
     print("=" * 60)
     agent = SelfImprovingAgent()
+    graph = agent.build_graph()
+    config = agent.get_session_config()
     task_count = 0
+
+    # Resume from checkpoint if exists
+    existing = graph.get_state(config)
+    if existing and existing.values:
+        print(f"[Resuming session with {existing.values.get('task_count', 0)} previous tasks]\n")
+
+    print("Features: Checkpoint persistence, skill extraction, self-improvement")
+    print("Type 'exit' or 'q' to quit\n")
 
     while True:
         try:
@@ -836,7 +859,7 @@ if __name__ == "__main__":
         if q.lower() in ("q", "exit", ""):
             break
 
-        result = agent.run(q, task_count=task_count)
+        result = agent.run(q, task_count=task_count, config=config)
         task_count = result.get("task_count", task_count + 1)
 
         print("\n" + "─" * 50)

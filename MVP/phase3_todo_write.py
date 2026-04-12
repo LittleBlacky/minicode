@@ -13,6 +13,7 @@ from langchain_core.messages import (
     AIMessageChunk,
 )
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
@@ -256,15 +257,14 @@ def execute_tools(state: AgentState) -> dict:
     }
 
 
-def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
+def should_continue(state: AgentState) -> Literal["tools", END]:
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tools"
-    return "__end__"
+    return END
 
 
 workflow = StateGraph(AgentState)
-# 移除了 reminder_todo 节点，直接从 agent 开始
 workflow.add_node("agent", call_model_stream)
 workflow.add_node("tools", execute_tools)
 
@@ -272,15 +272,31 @@ workflow.add_edge(START, "agent")
 workflow.add_conditional_edges("agent", should_continue)
 workflow.add_edge("tools", "agent")
 
-graph = workflow.compile()
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+graph = workflow.compile(checkpointer=checkpointer)
+
+
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
+
 
 if __name__ == "__main__":
-    print(f"\033[32mCoding Agent started in {WORKDIR}\033[0m")
+    thread_id = "todo_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint if exists
+    existing = graph.get_state(config)
+    if existing and existing.values.get("messages"):
+        print(f"[Resuming session {thread_id} with {len(existing.values['messages'])} messages]\n")
+
+    print(f"\033[32mTodo Agent (phase3) - LangGraph Native Patterns\033[0m")
+    print("Features: Checkpoint persistence, streaming output, todo tracking")
     print("Type 'q', 'exit' or Ctrl+C to quit.\n")
 
-    messages = [SystemMessage(content=SYSTEM)]
     state = {
-        "messages": messages,
+        "messages": [SystemMessage(content=SYSTEM)],
         "todo_items": [],
         "rounds_since_todo_update": 0,
     }
@@ -293,5 +309,14 @@ if __name__ == "__main__":
         if query.strip().lower() in ("q", "exit", ""):
             break
 
-        state["messages"].append(HumanMessage(content=query))
-        state = graph.invoke(state)
+        # Get existing state from checkpoint
+        existing = graph.get_state(config)
+        if existing and existing.values:
+            state = {
+                "messages": existing.values.get("messages", []) + [HumanMessage(content=query)],
+                "todo_items": existing.values.get("todo_items", []),
+                "rounds_since_todo_update": existing.values.get("rounds_since_todo_update", 0),
+            }
+        else:
+            state["messages"].append(HumanMessage(content=query))
+        state = graph.invoke(state, config)

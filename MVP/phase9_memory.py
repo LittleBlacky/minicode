@@ -36,8 +36,9 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -525,13 +526,37 @@ graph.add_node("tools", tools_wrapper)
 graph.set_entry_point("agent")
 graph.add_conditional_edges("agent", route_agent, {"tools": "tools", END: END})
 graph.add_edge("tools", "agent")
-app = graph.compile()
+
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+app = graph.compile(checkpointer=checkpointer)
+
+
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
+
 
 if __name__ == "__main__":
-    state: AgentState = {"messages": []}
+    thread_id = "memory_session_1"
+    config = get_session_config(thread_id)
 
-    while (q := input("\033[36ms09 >> \033[0m")) not in ("q", "exit", ""):
-        state["messages"].append(HumanMessage(content=q))
-        state = app.invoke(state)
+    # Resume from checkpoint if exists
+    existing = app.get_state(config)
+    existing_msgs = existing.values.get("messages", []) if existing and existing.values else []
+    if existing_msgs:
+        print(f"[Resuming session {thread_id} with {len(existing_msgs)} messages]\n")
+
+    print("Memory Agent (phase9) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, cross-session memory")
+    print("Type 'exit' or 'q' to quit\n")
+
+    while (q := input(f"\033[36m{thread_id} >> \033[0m")) not in ("q", "exit", ""):
+        # Get existing messages from checkpoint
+        existing = app.get_state(config)
+        existing_msgs = existing.values.get("messages", []) if existing and existing.values else []
+        existing_msgs.append(HumanMessage(content=q))
+
+        state = app.invoke({"messages": existing_msgs}, config)
         dream.consolidate()  # 每次结束后检查，门控防止频繁执行
         print()

@@ -28,6 +28,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Too
 from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
@@ -287,7 +288,14 @@ workflow.add_edge(START, "agent")
 workflow.add_conditional_edges("agent", should_continue)
 workflow.add_edge("tools", "agent")
 
-graph = workflow.compile()
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+graph = workflow.compile(checkpointer=checkpointer)
+
+
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
 
 
 # ---------- CLI ----------
@@ -295,11 +303,22 @@ if __name__ == "__main__":
     section_count = SYSTEM.count("\n# ")
     print(f"[System prompt assembled: {len(SYSTEM)} chars, ~{section_count} sections]")
 
-    state: AgentState = {"messages": []}
+    thread_id = "system_prompt_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint if exists
+    existing = graph.get_state(config)
+    existing_msgs = existing.values.get("messages", []) if existing and existing.values else []
+    if existing_msgs:
+        print(f"[Resuming session {thread_id} with {len(existing_msgs)} messages]\n")
+
+    print("System Prompt Agent (phase11) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, dynamic system prompts")
+    print("Type 'exit' or 'q' to quit\n")
 
     while True:
         try:
-            q = input("\033[36ms11 >> \033[0m")
+            q = input(f"\033[36m{thread_id} >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
         if q.strip().lower() in ("q", "exit", ""):
@@ -315,6 +334,10 @@ if __name__ == "__main__":
                     print(f"  {line}")
             continue
 
-        state["messages"].append(HumanMessage(content=q))
-        state = graph.invoke(state)
+        # Get existing messages from checkpoint
+        existing = graph.get_state(config)
+        existing_msgs = existing.values.get("messages", []) if existing and existing.values else []
+        existing_msgs.append(HumanMessage(content=q))
+
+        state = graph.invoke({"messages": existing_msgs}, config)
         print()

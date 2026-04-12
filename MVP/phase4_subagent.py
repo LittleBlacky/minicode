@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain.chat_models import init_chat_model
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -248,35 +249,52 @@ def build_parent_graph():
     graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
     graph.add_edge("tools", "agent")
 
-    return graph.compile()
+    # Compile with checkpoint for session persistence (LangGraph native)
+    checkpointer = MemorySaver()
+    return graph.compile(checkpointer=checkpointer)
+
+
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
 
 
 # ---------------------------------------------------------------------------
-# 主循环：保持父 Agent 跨轮次的对话历史
+# 主循环：保持父 Agent 跨轮次的对话历史 (with checkpoint persistence)
 # ---------------------------------------------------------------------------
 def main():
     parent_graph = build_parent_graph()
-    history: list = []  # 跨轮次持久化父 Agent 消息历史
+    thread_id = "subagent_session_1"
+    config = get_session_config(thread_id)
 
-    print("\033[36m父子 Agent (LangGraph) — 输入 q/exit 退出\033[0m\n")
+    # Resume from checkpoint if exists
+    existing = parent_graph.get_state(config)
+    history = existing.values.get("messages", []) if existing and existing.values else []
+    if history:
+        print(f"[Resuming session {thread_id} with {len(history)} messages]\n")
+
+    print("\033[36m父子 Agent (phase4) - LangGraph Native Patterns\033[0m")
+    print("Features: Checkpoint persistence, parent/child graph isolation")
+    print("Type 'q' or 'exit' to quit\033[0m\n")
 
     while True:
         try:
-            query = input("\033[36ms04 >> \033[0m").strip()
+            query = input(f"\033[36m{thread_id} >> \033[0m").strip()
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.lower() in ("q", "exit", ""):
             break
 
-        # 将用户消息追加到历史，传入图
-        history.append(HumanMessage(content=query))
-        final_state = parent_graph.invoke({"messages": history})
+        # Get existing messages from checkpoint and add new user message
+        existing = parent_graph.get_state(config)
+        existing_msgs = existing.values.get("messages", []) if existing and existing.values else []
+        existing_msgs.append(HumanMessage(content=query))
 
-        # 用图返回的完整消息列表替换历史（包含 AI 回复 & 工具结果）
+        final_state = parent_graph.invoke({"messages": existing_msgs}, config)
         history = final_state["messages"]
 
-        # 打印最后一条 AI 消息
+        # Print last AI message
         for msg in reversed(history):
             if isinstance(msg, AIMessage) and msg.content:
                 text = msg.content if isinstance(msg.content, str) else str(msg.content)

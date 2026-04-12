@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -41,7 +42,8 @@ model = init_chat_model(
 
 SYSTEM_PROMPT = (
     f"You are a coding agent at {os.getcwd()}. "
-    "Use bash to inspect and change the workspace. Act first, then report clearly."
+    "Use bash to inspect and change the workspace. Act first, then report clearly.\n"
+    "LangGraph native: Checkpoint persistence for session recovery."
 )
 
 
@@ -106,11 +108,18 @@ workflow.add_edge(START, "agent")
 workflow.add_conditional_edges("agent", should_continue)
 workflow.add_edge("tools", "agent")
 
-graph = workflow.compile()
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+graph = workflow.compile(checkpointer=checkpointer)
+
+
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
 
 
 # ----------------------------------------------------------------------
-# CLI loop (preserves original interactive style)
+# CLI loop with checkpoint persistence
 # ----------------------------------------------------------------------
 def extract_text_from_message(msg) -> str:
     if isinstance(msg, AIMessage):
@@ -119,31 +128,51 @@ def extract_text_from_message(msg) -> str:
 
 
 if __name__ == "__main__":
-    history = []  # list of LangChain messages (HumanMessage, AIMessage, ToolMessage)
+    thread_id = "agent_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint if exists
+    existing = graph.get_state(config)
+    if existing and existing.values.get("messages"):
+        print(
+            f"[Resuming session {thread_id} with {len(existing.values['messages'])} messages]\n"
+        )
+
+    print("Agent Loop (phase1) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, streaming output")
+    print("Type 'exit' or 'q' to quit\n")
+
     while True:
         try:
-            query = input("\033[36ms01 >> \033[0m")
+            query = input(f"\033[36m{thread_id} >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
 
-        # Add user message to history
-        history.append(HumanMessage(content=query))
+        # Get existing messages from checkpoint
+        existing = graph.get_state(config)
+        existing_msgs = (
+            existing.values.get("messages", []) if existing and existing.values else []
+        )
+        existing_msgs.append(HumanMessage(content=query))
 
-        # Run the agent graph with the current history
-        result = graph.invoke({"messages": history})
+        # Run the agent graph with checkpoint
+        result = graph.invoke({"messages": existing_msgs}, config)
 
-        # Update history with the final state (contains all intermediate messages)
-        history = result["messages"]
+        # Get updated messages from checkpoint
+        updated = graph.get_state(config)
+        history = (
+            updated.values.get("messages", [])
+            if updated and updated.values
+            else result["messages"]
+        )
 
-        # Print the final assistant response (excluding tool call messages)
+        # Print the final assistant response
         final_message = history[-1]
         if isinstance(final_message, AIMessage) and not final_message.tool_calls:
             print(final_message.content)
         elif isinstance(final_message, AIMessage):
-            # In case the last message has tool calls (shouldn't happen with __end__),
-            # we still show the text part if any.
             if final_message.content:
                 print(final_message.content)
         print()

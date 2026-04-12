@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -310,6 +311,8 @@ Task workflow:
 2. Track progress with task_update
 3. Set dependencies with add_blocked_by
 4. Tasks survive context compression (stored on disk)
+
+LangGraph native: Checkpoint persistence, state-based task tracking.
 """
 
 
@@ -328,7 +331,7 @@ def should_continue(state: AgentState) -> Literal["tools", END]:
     return END
 
 
-# Build the graph
+# Build the graph with checkpoint (LangGraph native)
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
@@ -341,18 +344,32 @@ workflow.add_conditional_edges(
     {"tools": "tools", END: END}
 )
 
-graph = workflow.compile()
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+graph = workflow.compile(checkpointer=checkpointer)
 
 
-def run_agent(query: str):
-    """Run the agent with a query."""
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def run_agent(query: str, thread_id: str = "task_session_1"):
+    """Run the agent with a query using checkpoint-based session."""
+    config = get_session_config(thread_id)
+
+    # Check existing state
+    existing = graph.get_state(config)
+    existing_msgs = existing.values.get("messages", []) if existing and existing.values else []
+    existing_pending = existing.values.get("pending_tasks", []) if existing and existing.values else []
+
     initial_state = {
-        "messages": [HumanMessage(content=query)],
+        "messages": existing_msgs + [HumanMessage(content=query)],
         "last_tool_result": None,
-        "pending_tasks": [],
+        "pending_tasks": existing_pending,
     }
 
-    for event in graph.stream(initial_state):
+    for event in graph.stream(initial_state, config):
         node_name = list(event.keys())[0]
         if node_name == "agent":
             response = event[node_name]["messages"][-1]
@@ -363,14 +380,23 @@ def run_agent(query: str):
 
 
 if __name__ == "__main__":
-    print("Task System Agent (phase13)")
+    thread_id = "task_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint if exists
+    existing = graph.get_state(config)
+    if existing and existing.values.get("messages"):
+        print(f"[Resuming session {thread_id} with {len(existing.values['messages'])} messages]\n")
+
+    print("Task System Agent (phase13) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, state-based task tracking")
     print("Type 'exit' or 'q' to quit\n")
 
     while True:
         try:
-            query = input("\033[36mphase13 >> \033[0m")
+            query = input(f"\033[36m{thread_id} >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-        run_agent(query)
+        run_agent(query, thread_id)

@@ -5,9 +5,10 @@ from typing import Annotated, Optional
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
@@ -315,18 +316,48 @@ graph.add_conditional_edges(
     "tools", route_tools, {"compact": "compact", "pre_model": "pre_model"}
 )
 graph.add_edge("compact", "agent")
-app = graph.compile()
+
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+app = graph.compile(checkpointer=checkpointer)
+
+
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
+
 
 if __name__ == "__main__":
+    thread_id = "context_compact_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint if exists
+    existing = app.get_state(config)
+    if existing and existing.values:
+        existing_msgs = existing.values.get("messages", [])
+        print(f"[Resuming session {thread_id} with {len(existing_msgs)} messages]\n")
+    else:
+        existing_msgs = []
+
+    print("Context Compact Agent (phase6) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, context compaction")
+    print("Type 'exit' or 'q' to quit\n")
+
     state: AgentState = {
-        "messages": [],
-        "has_compacted": False,
-        "last_summary": "",
-        "recent_files": [],
+        "messages": existing_msgs,
+        "has_compacted": existing.values.get("has_compacted", False) if existing and existing.values else False,
+        "last_summary": existing.values.get("last_summary", "") if existing and existing.values else "",
+        "recent_files": existing.values.get("recent_files", []) if existing and existing.values else [],
         "compact_requested": False,
         "compact_focus": None,
     }
-    while (q := input("\033[36ms06 >> \033[0m")) not in ("q", "exit", ""):
-        state["messages"].append(HumanMessage(content=q))
-        state = app.invoke(state)
+
+    while (q := input(f"\033[36m{thread_id} >> \033[0m")) not in ("q", "exit", ""):
+        # Get existing messages from checkpoint
+        existing = app.get_state(config)
+        existing_msgs = existing.values.get("messages", []) if existing and existing.values else []
+        existing_msgs.append(HumanMessage(content=q))
+
+        state["messages"] = existing_msgs
+        state = app.invoke(state, config)
         print()

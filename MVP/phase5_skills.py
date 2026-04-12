@@ -27,8 +27,10 @@ from langchain_core.messages import (
     AIMessageChunk,
     BaseMessage,
     HumanMessage,
+    SystemMessage,
     ToolMessage,
 )
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, START, END
 from langchain_core.tools import tool
@@ -228,19 +230,18 @@ def execute_tools(state: AgentState):
     return {"messages": tool_messages}
 
 
-def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
+def should_continue(state: AgentState) -> Literal["tools", END]:
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tools"
-    return "__end__"
+    return END
 
 
 def call_model(state: AgentState) -> dict:
     """流式输出模型的响应"""
-    # 如果需要提醒，则在消息副本中修改最后一条HumanMessage
-    messages_to_use = state["messages"]
+    messages_with_system = [SystemMessage(content=SYSTEM)] + state["messages"]
     full_response = None
-    for chunk in model_with_tools.stream(messages_to_use):
+    for chunk in model_with_tools.stream(messages_with_system):
         if isinstance(chunk, AIMessageChunk):
             if chunk.content:
                 print(chunk.content, end="", flush=True)
@@ -261,18 +262,41 @@ workflow.add_edge(START, "agent")
 workflow.add_edge("tools", "agent")
 workflow.add_conditional_edges("agent", should_continue)
 
-graph = workflow.compile()
+# Compile with checkpoint for session persistence (LangGraph native)
+checkpointer = MemorySaver()
+graph = workflow.compile(checkpointer=checkpointer)
+
+
+def get_session_config(thread_id: str) -> dict:
+    """LangGraph native: Get session config for checkpointing."""
+    return {"configurable": {"thread_id": thread_id}}
+
 
 if __name__ == "__main__":
-    state = {"messages": []}
+    thread_id = "skills_session_1"
+    config = get_session_config(thread_id)
+
+    # Resume from checkpoint if exists
+    existing = graph.get_state(config)
+    if existing and existing.values.get("messages"):
+        print(f"[Resuming session {thread_id} with {len(existing.values['messages'])} messages]\n")
+
+    print("Skills Agent (phase5) - LangGraph Native Patterns")
+    print("Features: Checkpoint persistence, on-demand skill loading")
+    print("Type 'exit' or 'q' to quit\n")
+
     while True:
         try:
-            query = input("\033[36ms05 >> \033[0m")
+            query = input(f"\033[36m{thread_id} >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-        messages = state["messages"]
-        messages.append(HumanMessage(content=query))
-        state = graph.invoke(state)
+
+        # Get existing messages from checkpoint
+        existing = graph.get_state(config)
+        existing_msgs = existing.values.get("messages", []) if existing and existing.values else []
+        existing_msgs.append(HumanMessage(content=query))
+
+        state = graph.invoke({"messages": existing_msgs}, config)
         print()
