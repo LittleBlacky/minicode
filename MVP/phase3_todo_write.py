@@ -188,9 +188,6 @@ class AgentState(TypedDict):
     rounds_since_todo_update: int
 
 
-PLAN_REMINDER_INTERVAL = 3
-
-
 def call_model_stream(state: AgentState) -> dict:
     """流式输出模型的响应，并可能插入todo刷新提醒。"""
     # 如果需要提醒，则在消息副本中修改最后一条HumanMessage
@@ -203,12 +200,9 @@ def call_model_stream(state: AgentState) -> dict:
                 reminder = (
                     "<reminder>Refresh your current plan before continuing.</reminder>"
                 )
-                # 修改副本：构造新HumanMessage，但因为我们不修改状态，只用于本次调用
-                # 为简单，直接修改列表的副本（列表内容不变，只是创建一个新的列表引用？消息对象不可变？HumanMessage可哈希但不可变，需新建）
-                # 这里我们构建一个新的消息列表，替换最后一条HumanMessage
                 new_msg = HumanMessage(
                     content=f"{reminder}\n{original_msg.content}",
-                    id=original_msg.id,  # 保持相同ID，若传入模型可能会忽略ID，保留无妨
+                    id=original_msg.id,
                 )
                 messages_to_use = (
                     messages_to_use[:i] + [new_msg] + messages_to_use[i + 1 :]
