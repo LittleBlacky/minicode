@@ -33,6 +33,13 @@ async def run_repl(runner: AgentRunner, workdir: Path) -> None:
     await start_repl(runner)
 
 
+async def run_tui(runner: AgentRunner, workdir: Path) -> None:
+    """Run Textual TUI."""
+    from minicode.tui.app import run_tui as start_tui
+    os.chdir(workdir)
+    await start_tui(runner)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="MiniCode - Claude-style coding agent")
     parser.add_argument("prompt", nargs="*", help="Single prompt to execute")
@@ -41,6 +48,8 @@ def main() -> None:
     parser.add_argument("--provider", default="anthropic", help="Model provider")
     parser.add_argument("--checkpoint", action="store_true", help="Enable checkpointing")
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
+    parser.add_argument("--tui", action="store_true", help="Use Textual TUI interface")
+    parser.add_argument("--plain", action="store_true", help="Use plain REPL (no TUI)")
 
     args = parser.parse_args()
 
@@ -59,8 +68,10 @@ def main() -> None:
     if args.prompt:
         prompt = " ".join(args.prompt)
         asyncio.run(run_single(runner, prompt, workdir))
-    else:
+    elif args.plain:
         asyncio.run(run_repl(runner, workdir))
+    else:
+        asyncio.run(run_tui(runner, workdir))
 
 
 if __name__ == "__main__":
