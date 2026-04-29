@@ -1,10 +1,10 @@
-"""Main agent implementation using LangGraph - Fixed version."""
+"""Main agent implementation using LangGraph - 轻量级核心循环"""
 from __future__ import annotations
 
 import os
 import re
 from pathlib import Path
-from typing import Annotated, Any, AsyncIterator, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from langchain_core.messages import (
     AIMessage,
@@ -23,16 +23,18 @@ from minicode.agent.state import AgentState
 from minicode.tools.registry import ALL_TOOLS
 from minicode.services.model_provider import create_provider
 from minicode.utils.system_prompt import get_system_prompt
-from minicode.tools.hook_tools import get_hook_manager
 from minicode.tools.permission_tools import bash_validator, check_permission
 
 
 WORKDIR = Path.cwd()
 
+# 工具映射用于快速查找
+TOOL_MAP: dict[str, BaseTool] = {t.name: t for t in ALL_TOOLS}
+TOOL_NODE = ToolNode(ALL_TOOLS, handle_tool_errors=True)
+
 
 class BashSecurityValidator:
-    """Validate bash commands for obviously dangerous patterns."""
-
+    """简单的 Bash 命令安全验证"""
     VALIDATORS = [
         ("shell_metachar", r"[;&|`$]"),
         ("sudo", r"\bsudo\b"),
@@ -48,29 +50,13 @@ class BashSecurityValidator:
                 failures.append((name, pattern))
         return failures
 
-    def describe_failures(self, command: str) -> str:
-        failures = self.validate(command)
-        if not failures:
-            return "No issues detected"
-        parts = [name for name, _ in failures]
-        return "Security flags: " + ", ".join(parts)
 
-
-# Build tool map for fast lookup
-TOOL_MAP: dict[str, BaseTool] = {t.name: t for t in ALL_TOOLS}
-TOOL_NODE = ToolNode(ALL_TOOLS, handle_tool_errors=True)
-
-
-def _safe_path(path_str: str) -> Path:
-    """Resolve path relative to workspace."""
-    path = (WORKDIR / path_str).resolve()
-    if not path.is_relative_to(WORKDIR):
-        raise ValueError(f"Path escapes workspace: {path_str}")
-    return path
+bash_validator = BashSecurityValidator()
 
 
 class AgentGraphBuilder:
-    """Builder for the agent graph with model and tools bound."""
+    """构建 Agent Graph 的 Builder"""
+    _instance: Optional["AgentGraphBuilder"] = None
 
     def __init__(
         self,
@@ -82,9 +68,12 @@ class AgentGraphBuilder:
         self._model = None
         self._model_with_tools = None
 
+    @classmethod
+    def get_instance(cls) -> "AgentGraphBuilder":
+        return cls._instance
+
     @property
     def model(self):
-        """Get or create the model (lazy initialization)."""
         if self._model is None:
             self._model = create_provider(
                 provider=self.model_provider,
@@ -94,46 +83,44 @@ class AgentGraphBuilder:
 
     @property
     def model_with_tools(self):
-        """Get model with tools bound (lazy initialization)."""
         if self._model_with_tools is None:
             self._model_with_tools = self.model.bind_tools(ALL_TOOLS)
         return self._model_with_tools
 
+    def reset(self):
+        """重置模型实例（用于切换模型时）"""
+        self._model = None
+        self._model_with_tools = None
 
-_graph_builder: Optional[AgentGraphBuilder] = None
 
-
-def get_graph_builder(
-    model_provider: str = "anthropic",
-    model_name: str = "claude-sonnet-4-7",
-) -> AgentGraphBuilder:
-    """Get or create global graph builder instance."""
-    global _graph_builder
-    if _graph_builder is None:
-        _graph_builder = AgentGraphBuilder(model_provider, model_name)
-    return _graph_builder
+def _build_system_message() -> str:
+    """构建系统提示"""
+    return get_system_prompt(WORKDIR)
 
 
 def call_model(state: AgentState) -> dict:
-    """Call the LLM with current messages and tools bound."""
+    """调用 LLM 进行推理 - 核心节点"""
     messages = state.get("messages", [])
     if not messages:
         return {"messages": []}
 
-    system_prompt = get_system_prompt(WORKDIR)
-    messages_with_system = [SystemMessage(content=system_prompt)] + list(messages)
+    system_msg = SystemMessage(content=_build_system_message())
+    messages_with_system = [system_msg] + list(messages)
 
-    builder = get_graph_builder(
-        model_provider=os.environ.get("MODEL_PROVIDER", "anthropic"),
-        model_name=os.environ.get("MODEL_NAME", "claude-sonnet-4-7"),
-    )
+    # 获取环境变量中的模型配置
+    provider = os.environ.get("MODEL_PROVIDER", "anthropic")
+    name = os.environ.get("MODEL_NAME", "claude-sonnet-4-7")
+
+    builder = AgentGraphBuilder.get_instance()
+    if not builder or builder.model_provider != provider:
+        builder = AgentGraphBuilder(provider, name)
 
     response = builder.model_with_tools.invoke(messages_with_system)
     return {"messages": [response]}
 
 
 def execute_tools(state: AgentState) -> dict:
-    """Execute tools from the last AI message."""
+    """执行工具 - 核心节点"""
     messages = state.get("messages", [])
     if not messages:
         return {"messages": [], "tool_messages": []}
@@ -144,42 +131,23 @@ def execute_tools(state: AgentState) -> dict:
 
     tool_calls = last_message.tool_calls
     tool_messages = []
-    hook_manager = get_hook_manager()
 
     for tc in tool_calls:
         tool_name = tc["name"]
         tool_args = tc.get("args", {}) or {}
+        tool_call_id = tc.get("id", "")
 
-        hook_context = {
-            "tool_name": tool_name,
-            "tool_input": tool_args,
-        }
-
-        # Run pre-tool hooks
-        pre_hook_result = hook_manager.run_hooks("PreToolUse", hook_context)
-        if pre_hook_result["blocked"]:
-            content = f"[Blocked]: {pre_hook_result['block_reason']}"
-            tool_messages.append(
-                ToolMessage(content=content, tool_call_id=tc["id"])
-            )
-            continue
-
-        # Check bash permissions
+        # Bash 权限检查
         if tool_name == "bash_tool":
             command = tool_args.get("command", "")
             allowed, reason = check_permission(command, "bash_tool")
             if not allowed:
-                content = f"[Permission Denied]: {reason}"
                 tool_messages.append(
-                    ToolMessage(content=content, tool_call_id=tc["id"])
+                    ToolMessage(content=f"[Permission Denied]: {reason}", tool_call_id=tool_call_id)
                 )
                 continue
 
-            # Update args if hook modified them
-            if pre_hook_result.get("updated_input"):
-                tool_args = pre_hook_result["updated_input"]
-
-        # Execute the tool
+        # 执行工具
         if tool_name in TOOL_MAP:
             try:
                 result = TOOL_NODE.invoke({"messages": [last_message]})
@@ -189,22 +157,18 @@ def execute_tools(state: AgentState) -> dict:
                             tool_messages.append(msg)
             except Exception as e:
                 tool_messages.append(
-                    ToolMessage(content=f"[Error] {e}", tool_call_id=tc["id"])
+                    ToolMessage(content=f"[Error] {e}", tool_call_id=tool_call_id)
                 )
         else:
             tool_messages.append(
-                ToolMessage(content=f"[Error] Tool not found: {tool_name}", tool_call_id=tc["id"])
+                ToolMessage(content=f"[Error] Unknown tool: {tool_name}", tool_call_id=tool_call_id)
             )
-
-        # Run post-tool hooks
-        hook_context["tool_output"] = result if 'result' in dir() else None
-        post_hook_result = hook_manager.run_hooks("PostToolUse", hook_context)
 
     return {"messages": tool_messages, "tool_messages": tool_messages}
 
 
 def should_continue(state: AgentState) -> Literal["tools", END]:
-    """Determine if agent should continue or end."""
+    """判断是否继续（工具调用）还是结束"""
     messages = state.get("messages", [])
     if not messages:
         return END
@@ -220,23 +184,22 @@ def create_agent_graph(
     model_name: str = "claude-sonnet-4-7",
     use_checkpoint: bool = False,
 ):
-    """Create the main agent graph (non-streaming)."""
-    global _graph_builder
-    _graph_builder = AgentGraphBuilder(model_provider, model_name)
+    """创建轻量级 Agent Graph"""
+    builder = AgentGraphBuilder(model_provider, model_name)
+    AgentGraphBuilder._instance = builder
 
     workflow = StateGraph(AgentState)
 
+    # 核心节点：只保留 agent 和 tools
     workflow.add_node("agent", call_model)
     workflow.add_node("tools", execute_tools)
 
+    # 边：agent → tools(如果需要) → agent → ...
     workflow.set_entry_point("agent")
     workflow.add_conditional_edges(
         "agent",
         should_continue,
-        {
-            "tools": "tools",
-            END: END,
-        }
+        {"tools": "tools", END: END}
     )
     workflow.add_edge("tools", "agent")
 
@@ -244,100 +207,10 @@ def create_agent_graph(
 
     return workflow.compile(
         checkpointer=checkpointer,
-        interrupt_before=None,  # Allow tools to run automatically
+        interrupt_before=None,  # 工具自动执行
     )
 
 
-def create_agent_graph_stream(
-    model_provider: str = "anthropic",
-    model_name: str = "claude-sonnet-4-7",
-    use_checkpoint: bool = False,
-):
-    """Create the streaming agent graph with proper streaming."""
-    global _graph_builder
-    _graph_builder = AgentGraphBuilder(model_provider, model_name)
-
-    workflow = StateGraph(AgentState)
-
-    workflow.add_node("agent", call_model)
-    workflow.add_node("tools", execute_tools)
-
-    workflow.set_entry_point("agent")
-    workflow.add_conditional_edges(
-        "agent",
-        should_continue,
-        {
-            "tools": "tools",
-            END: END,
-        }
-    )
-    workflow.add_edge("tools", "agent")
-
-    checkpointer = MemorySaver() if use_checkpoint else None
-
-    return workflow.compile(
-        checkpointer=checkpointer,
-        interrupt_before=None,
-    )
-
-
-# Async streaming support
-async def call_model_stream_async(state: AgentState) -> dict:
-    """Async stream model responses and yield chunks."""
-    messages = state.get("messages", [])
-    if not messages:
-        return {"messages": []}
-
-    system_prompt = get_system_prompt(WORKDIR)
-    messages_with_system = [SystemMessage(content=system_prompt)] + list(messages)
-
-    builder = get_graph_builder(
-        model_provider=os.environ.get("MODEL_PROVIDER", "anthropic"),
-        model_name=os.environ.get("MODEL_NAME", "claude-sonnet-4-7"),
-    )
-
-    full_response = None
-    async for chunk in builder.model_with_tools.astream(messages_with_system):
-        if isinstance(chunk, AIMessageChunk):
-            if full_response is None:
-                full_response = chunk
-            else:
-                full_response = full_response + chunk
-
-    if full_response is None:
-        full_response = AIMessage(content="")
-
-    return {"messages": [full_response]}
-
-
-def create_agent_graph_async(
-    model_provider: str = "anthropic",
-    model_name: str = "claude-sonnet-4-7",
-    use_checkpoint: bool = False,
-):
-    """Create the async streaming agent graph."""
-    global _graph_builder
-    _graph_builder = AgentGraphBuilder(model_provider, model_name)
-
-    workflow = StateGraph(AgentState)
-
-    workflow.add_node("agent", call_model_stream_async)
-    workflow.add_node("tools", execute_tools)
-
-    workflow.set_entry_point("agent")
-    workflow.add_conditional_edges(
-        "agent",
-        should_continue,
-        {
-            "tools": "tools",
-            END: END,
-        }
-    )
-    workflow.add_edge("tools", "agent")
-
-    checkpointer = MemorySaver() if use_checkpoint else None
-
-    return workflow.compile(
-        checkpointer=checkpointer,
-        interrupt_before=None,
-    )
+# 别名用于向后兼容
+create_agent_graph_stream = create_agent_graph
+create_agent_graph_async = create_agent_graph
