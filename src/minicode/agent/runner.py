@@ -1,13 +1,14 @@
-"""Agent runner - orchestrates the agent execution."""
+"""Agent runner - orchestrates the agent execution with streaming support."""
+from __future__ import annotations
+
 import asyncio
 import os
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.memory import MemorySaver
 
-from minicode.agent.graph import create_agent_graph, create_agent_graph_stream
+from minicode.agent.graph import create_agent_graph, create_agent_graph_stream, create_agent_graph_async
 from minicode.agent.state import AgentState
 from minicode.services.checkpoint import CheckpointManager
 from minicode.tools.hook_tools import get_hook_manager
@@ -45,7 +46,13 @@ class AgentRunner:
             model_name=model_name,
             use_checkpoint=use_checkpoint,
         )
+        self.graph_async = create_agent_graph_async(
+            model_provider=model_provider,
+            model_name=model_name,
+            use_checkpoint=use_checkpoint,
+        )
 
+        # Run SessionStart hooks
         hook_manager = get_hook_manager()
         hook_result = hook_manager.run_hooks("SessionStart", {
             "model_provider": model_provider,
@@ -97,16 +104,13 @@ class AgentRunner:
     async def run(self, messages: list, thread_id: str = "default") -> dict:
         """Run agent with messages (non-streaming)."""
         config = self.checkpoint_manager.get_session_config(thread_id)
-
         initial_state = self._get_initial_state(messages)
-
         result = await self.graph.ainvoke(initial_state, config)
         return result
 
     async def stream(self, messages: list, thread_id: str = "default") -> AsyncIterator[str]:
         """Stream agent responses token by token."""
         config = self.checkpoint_manager.get_session_config(thread_id)
-
         initial_state = self._get_initial_state(messages)
 
         async for event in self.graph_stream.astream(initial_state, config):
@@ -124,40 +128,18 @@ class AgentRunner:
             else:
                 yield str(event)
 
-    async def run_with_user_input(
-        self,
-        user_input: str,
-        thread_id: str = "default",
-        resume_from: Optional[str] = None,
-    ) -> str:
-        """Run agent with a single user input, handling interrupts."""
-        from langgraph.types import Command
-
+    async def run_streaming(self, messages: list, thread_id: str = "default") -> str:
+        """Run agent with streaming, return full response."""
         config = self.checkpoint_manager.get_session_config(thread_id)
+        initial_state = self._get_initial_state(messages)
 
-        if resume_from:
-            input_state = Command(resume=resume_from)
-        else:
-            input_state = {"messages": [HumanMessage(content=user_input)]}
-
-        final_response = ""
-        try:
-            async for event in self.graph_stream.astream(input_state, config):
-                if isinstance(event, dict):
-                    if "__interrupt__" in event:
-                        for interrupt_info in event["__interrupt__"]:
-                            yield str(interrupt_info.value)
-                    elif "messages" in event:
-                        for msg in event["messages"]:
-                            if hasattr(msg, "content") and msg.content:
-                                final_response += msg.content
-                else:
-                    final_response += str(event)
-        except Exception as e:
-            yield f"[Error]: {e}"
-            return
-
-        yield final_response
+        full_response = ""
+        async for event in self.graph_async.astream(initial_state, config):
+            if isinstance(event, dict) and "messages" in event:
+                for msg in event["messages"]:
+                    if hasattr(msg, "content") and msg.content:
+                        full_response += msg.content
+        return full_response
 
     def get_session_state(self, thread_id: str = "default") -> Optional[dict]:
         """Get the current state of a session."""
@@ -223,12 +205,10 @@ async def run_interactive(
         print("\n[Processing...]\n")
 
         try:
-            result = await runner.run(messages, thread_id)
-            if "messages" in result:
-                response_msgs = result["messages"]
-                for msg in response_msgs:
-                    if hasattr(msg, "content") and msg.content:
-                        print(f"\033[32m{msg.content}\033[0m")
+            # Use streaming for better UX
+            full_response = await runner.run_streaming(messages, thread_id)
+            if full_response:
+                print(f"\033[32m{full_response}\033[0m")
         except Exception as e:
             print(f"[Error]: {e}")
             continue

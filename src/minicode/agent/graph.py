@@ -1,4 +1,6 @@
-"""Main agent implementation using LangGraph."""
+"""Main agent implementation using LangGraph - Fixed version."""
+from __future__ import annotations
+
 import os
 import re
 from pathlib import Path
@@ -11,7 +13,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.tools import tool
+from langchain_core.tools import tool, BaseTool
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -26,8 +28,6 @@ from minicode.tools.permission_tools import bash_validator, check_permission
 
 
 WORKDIR = Path.cwd()
-
-TOOL_NODE = ToolNode(ALL_TOOLS, handle_tool_errors=True)
 
 
 class BashSecurityValidator:
@@ -56,7 +56,9 @@ class BashSecurityValidator:
         return "Security flags: " + ", ".join(parts)
 
 
-bash_validator = BashSecurityValidator()
+# Build tool map for fast lookup
+TOOL_MAP: dict[str, BaseTool] = {t.name: t for t in ALL_TOOLS}
+TOOL_NODE = ToolNode(ALL_TOOLS, handle_tool_errors=True)
 
 
 def _safe_path(path_str: str) -> Path:
@@ -130,70 +132,8 @@ def call_model(state: AgentState) -> dict:
     return {"messages": [response]}
 
 
-def call_model_stream(state: AgentState) -> dict:
-    """Stream model responses and accumulate the final message."""
-    messages = state.get("messages", [])
-    if not messages:
-        return {"messages": []}
-
-    system_prompt = get_system_prompt(WORKDIR)
-    messages_with_system = [SystemMessage(content=system_prompt)] + list(messages)
-
-    builder = get_graph_builder(
-        model_provider=os.environ.get("MODEL_PROVIDER", "anthropic"),
-        model_name=os.environ.get("MODEL_NAME", "claude-sonnet-4-7"),
-    )
-
-    full_response = None
-    for chunk in builder.model_with_tools.stream(messages_with_system):
-        if isinstance(chunk, AIMessageChunk):
-            if chunk.content:
-                print(chunk.content, end="", flush=True)
-            if full_response is None:
-                full_response = chunk
-            else:
-                full_response = full_response + chunk
-
-    print()
-    if full_response is None:
-        full_response = AIMessage(content="")
-
-    return {"messages": [full_response]}
-
-
-async def call_model_stream_async(state: AgentState) -> dict:
-    """Async stream model responses."""
-    messages = state.get("messages", [])
-    if not messages:
-        return {"messages": []}
-
-    system_prompt = get_system_prompt(WORKDIR)
-    messages_with_system = [SystemMessage(content=system_prompt)] + list(messages)
-
-    builder = get_graph_builder(
-        model_provider=os.environ.get("MODEL_PROVIDER", "anthropic"),
-        model_name=os.environ.get("MODEL_NAME", "claude-sonnet-4-7"),
-    )
-
-    full_response = None
-    async for chunk in builder.model_with_tools.astream(messages_with_system):
-        if isinstance(chunk, AIMessageChunk):
-            if chunk.content:
-                print(chunk.content, end="", flush=True)
-            if full_response is None:
-                full_response = chunk
-            else:
-                full_response = full_response + chunk
-
-    print()
-    if full_response is None:
-        full_response = AIMessage(content="")
-
-    return {"messages": [full_response]}
-
-
 def execute_tools(state: AgentState) -> dict:
-    """Execute tools from the last AI message using ToolNode."""
+    """Execute tools from the last AI message."""
     messages = state.get("messages", [])
     if not messages:
         return {"messages": [], "tool_messages": []}
@@ -215,39 +155,50 @@ def execute_tools(state: AgentState) -> dict:
             "tool_input": tool_args,
         }
 
+        # Run pre-tool hooks
         pre_hook_result = hook_manager.run_hooks("PreToolUse", hook_context)
         if pre_hook_result["blocked"]:
             content = f"[Blocked]: {pre_hook_result['block_reason']}"
-            print(f"> {tool_name}: {content}")
             tool_messages.append(
                 ToolMessage(content=content, tool_call_id=tc["id"])
             )
             continue
 
+        # Check bash permissions
         if tool_name == "bash_tool":
             command = tool_args.get("command", "")
             allowed, reason = check_permission(command, "bash_tool")
             if not allowed:
                 content = f"[Permission Denied]: {reason}"
-                print(f"> {tool_name}: {content}")
                 tool_messages.append(
                     ToolMessage(content=content, tool_call_id=tc["id"])
                 )
                 continue
 
+            # Update args if hook modified them
             if pre_hook_result.get("updated_input"):
                 tool_args = pre_hook_result["updated_input"]
-                command = tool_args.get("command", "")
 
-        result = TOOL_NODE.invoke(state)
-        if "messages" in result:
-            tool_messages.extend(result["messages"])
+        # Execute the tool
+        if tool_name in TOOL_MAP:
+            try:
+                result = TOOL_NODE.invoke({"messages": [last_message]})
+                if "messages" in result:
+                    for msg in result["messages"]:
+                        if isinstance(msg, ToolMessage):
+                            tool_messages.append(msg)
+            except Exception as e:
+                tool_messages.append(
+                    ToolMessage(content=f"[Error] {e}", tool_call_id=tc["id"])
+                )
+        else:
+            tool_messages.append(
+                ToolMessage(content=f"[Error] Tool not found: {tool_name}", tool_call_id=tc["id"])
+            )
 
-        hook_context["tool_output"] = result
+        # Run post-tool hooks
+        hook_context["tool_output"] = result if 'result' in dir() else None
         post_hook_result = hook_manager.run_hooks("PostToolUse", hook_context)
-        if post_hook_result["messages"]:
-            for msg in post_hook_result["messages"]:
-                print(f"  [context] {msg[:100]}")
 
     return {"messages": tool_messages, "tool_messages": tool_messages}
 
@@ -284,7 +235,7 @@ def create_agent_graph(
         should_continue,
         {
             "tools": "tools",
-            "__end__": END,
+            END: END,
         }
     )
     workflow.add_edge("tools", "agent")
@@ -293,7 +244,7 @@ def create_agent_graph(
 
     return workflow.compile(
         checkpointer=checkpointer,
-        interrupt_before=["tools"],
+        interrupt_before=None,  # Allow tools to run automatically
     )
 
 
@@ -302,13 +253,13 @@ def create_agent_graph_stream(
     model_name: str = "claude-sonnet-4-7",
     use_checkpoint: bool = False,
 ):
-    """Create the streaming agent graph."""
+    """Create the streaming agent graph with proper streaming."""
     global _graph_builder
     _graph_builder = AgentGraphBuilder(model_provider, model_name)
 
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("agent", call_model_stream)
+    workflow.add_node("agent", call_model)
     workflow.add_node("tools", execute_tools)
 
     workflow.set_entry_point("agent")
@@ -317,7 +268,7 @@ def create_agent_graph_stream(
         should_continue,
         {
             "tools": "tools",
-            "__end__": END,
+            END: END,
         }
     )
     workflow.add_edge("tools", "agent")
@@ -326,8 +277,37 @@ def create_agent_graph_stream(
 
     return workflow.compile(
         checkpointer=checkpointer,
-        interrupt_before=["tools"],
+        interrupt_before=None,
     )
+
+
+# Async streaming support
+async def call_model_stream_async(state: AgentState) -> dict:
+    """Async stream model responses and yield chunks."""
+    messages = state.get("messages", [])
+    if not messages:
+        return {"messages": []}
+
+    system_prompt = get_system_prompt(WORKDIR)
+    messages_with_system = [SystemMessage(content=system_prompt)] + list(messages)
+
+    builder = get_graph_builder(
+        model_provider=os.environ.get("MODEL_PROVIDER", "anthropic"),
+        model_name=os.environ.get("MODEL_NAME", "claude-sonnet-4-7"),
+    )
+
+    full_response = None
+    async for chunk in builder.model_with_tools.astream(messages_with_system):
+        if isinstance(chunk, AIMessageChunk):
+            if full_response is None:
+                full_response = chunk
+            else:
+                full_response = full_response + chunk
+
+    if full_response is None:
+        full_response = AIMessage(content="")
+
+    return {"messages": [full_response]}
 
 
 def create_agent_graph_async(
@@ -350,7 +330,7 @@ def create_agent_graph_async(
         should_continue,
         {
             "tools": "tools",
-            "__end__": END,
+            END: END,
         }
     )
     workflow.add_edge("tools", "agent")
@@ -359,5 +339,5 @@ def create_agent_graph_async(
 
     return workflow.compile(
         checkpointer=checkpointer,
-        interrupt_before=["tools"],
+        interrupt_before=None,
     )
