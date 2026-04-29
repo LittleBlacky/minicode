@@ -14,6 +14,7 @@ from minicode.tools.skill_tools import SKILL_TOOLS
 from minicode.tools.permission_tools import PERMISSION_TOOLS
 from minicode.tools.protocol_tools import PROTOCOL_TOOLS
 from minicode.tools.hook_tools import HOOK_TOOLS
+from minicode.tools.compact_tools import COMPACT_TOOLS
 
 
 ALL_TOOLS = (
@@ -32,6 +33,7 @@ ALL_TOOLS = (
     + PERMISSION_TOOLS
     + PROTOCOL_TOOLS
     + HOOK_TOOLS
+    + COMPACT_TOOLS
 )
 
 
