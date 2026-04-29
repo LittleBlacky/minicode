@@ -1,6 +1,6 @@
 # MiniCode
 
-A Claude-style terminal coding agent powered by LangGraph.
+A terminal coding agent powered by LangGraph.
 
 ## Features
 
@@ -34,21 +34,21 @@ Launches REPL mode with interactive input.
 
 ## Available Tools
 
-| Tool | Description |
-|------|-------------|
-| read_file | Read file contents |
-| write_file | Write file contents |
-| edit_file | Edit existing files |
-| bash_run | Execute Bash commands |
-| glob_tool | Find files by pattern |
-| grep_tool | Search file contents |
-| TaskCreate | Create tasks |
-| TodoWrite | Write Todo list |
-| spawn_teammate | Spawn AI teammates |
+| Tool           | Description             |
+| -------------- | ----------------------- |
+| read_file      | Read file contents      |
+| write_file     | Write file contents     |
+| edit_file      | Edit existing files     |
+| bash_run       | Execute Bash commands   |
+| glob_tool      | Find files by pattern   |
+| grep_tool      | Search file contents    |
+| TaskCreate     | Create tasks            |
+| TodoWrite      | Write Todo list         |
+| spawn_teammate | Spawn AI teammates      |
 | background_run | Run tasks in background |
-| cron_create | Create scheduled tasks |
-| memory_save | Save persistent memory |
-| skill_create | Create skills |
+| cron_create    | Create scheduled tasks  |
+| memory_save    | Save persistent memory  |
+| skill_create   | Create skills           |
 
 ## Configuration
 
@@ -91,3 +91,4 @@ black src/
 ## License
 
 MIT
+

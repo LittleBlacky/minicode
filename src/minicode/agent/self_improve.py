@@ -1,5 +1,6 @@
 """Self-improvement module - Agent learns from experience."""
 import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -65,7 +66,7 @@ class DreamConsolidator:
             summary += f"\n建议创建技能: {skill_type}\n"
 
         # Save to memory
-        memory_file = self.memory_dir / f"dream_{int(json.time.time() if hasattr(json, 'time') else 0)}.md"
+        memory_file = self.memory_dir / f"dream_{int(time.time())}.md"
         memory_file.write_text(summary)
 
         return summary

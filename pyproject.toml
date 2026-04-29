@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "minicode"
 version = "0.1.0"
-description = "A Claude-style terminal coding agent"
+description = "A terminal coding agent"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
