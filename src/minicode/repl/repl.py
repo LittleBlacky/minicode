@@ -10,17 +10,36 @@ class REPL:
     """Interactive REPL for the agent."""
 
     COMMANDS = {
+        # 基础命令
         "/help": "显示帮助信息",
         "/quit": "退出程序",
         "/exit": "退出程序",
         "/clear": "清屏",
-        "/stats": "查看统计",
-        "/memory": "查看记忆",
+        "/status": "查看Agent状态",
+
+        # 工具与权限
+        "/tools": "列出所有可用工具",
+        "/permission": "管理权限 (list/allow/deny)",
+
+        # 任务与待办
+        "/tasks": "查看任务列表",
+        "/todos": "查看待办事项",
+
+        # 记忆与知识
+        "/memory": "查看记忆系统",
         "/dream": "触发梦境整合",
-        "/team": "查看团队状态",
-        "/tasks": "查看任务",
+        "/skills": "查看技能列表",
         "/preference": "保存偏好 (用法: /preference <key> <value>)",
         "/project": "保存项目知识 (用法: /project <key> <value>)",
+
+        # 团队协作
+        "/team": "查看团队状态",
+
+        # 系统功能
+        "/cron": "查看定时任务",
+        "/hooks": "查看钩子列表",
+        "/compact": "压缩对话历史",
+        "/stats": "查看统计信息",
     }
 
     def __init__(self, runner):
@@ -41,6 +60,96 @@ class REPL:
         print("\n可用命令:")
         for cmd, desc in self.COMMANDS.items():
             print(f"  {cmd:<15} {desc}")
+        print()
+
+    def print_status(self) -> None:
+        """Print agent status."""
+        stats = self.runner.get_stats()
+        print("\n[状态]")
+        print(f"  会话ID: {self.runner.thread_id}")
+        print(f"  模型: {self.runner.model_name}")
+        print(f"  提供商: {self.runner.model_provider}")
+        print(f"  总Turns: {stats['session']['total_turns']}")
+        print(f"  任务统计: {stats['self_improve']['total_tasks']} 个")
+        print()
+
+    def print_tools(self) -> None:
+        """Print available tools."""
+        from minicode.tools.registry import ALL_TOOLS
+        print(f"\n[可用工具] {len(ALL_TOOLS)} 个")
+        for i, tool in enumerate(ALL_TOOLS, 1):
+            print(f"  {i:>2}. {tool.name}")
+        print()
+
+    def print_permission(self, cmd: str) -> None:
+        """Print or modify permissions."""
+        from minicode.tools.permission_tools import get_permission_mode
+        mode = get_permission_mode()
+        print("\n[权限模式]")
+        print(f"  当前: {mode}")
+        print("  用法: /permission list|allow|deny")
+        print()
+
+    def print_todos(self) -> None:
+        """Print todo list."""
+        mem = self.runner.get_memory()
+        todos = mem['session'].get('pending', [])
+        if not todos:
+            print("\n[待办] 暂无待办事项")
+        else:
+            print(f"\n[待办] {len(todos)} 项")
+            for todo in todos:
+                print(f"  • {todo}")
+        print()
+
+    def print_skills(self) -> None:
+        """Print skill list."""
+        from minicode.tools.skill_tools import SkillManager
+        sm = SkillManager()
+        skills = sm.list()
+        if not skills:
+            print("\n[技能] 暂无注册技能")
+        else:
+            print(f"\n[技能] {len(skills)} 个")
+            for skill in skills:
+                print(f"  • {skill['name']}: {skill['description']}")
+        print()
+
+    def print_cron(self) -> None:
+        """Print cron jobs."""
+        from minicode.tools.cron_tools import CronScheduler
+        cs = CronScheduler()
+        jobs = cs.list()
+        if not jobs:
+            print("\n[Cron] 暂无定时任务")
+        else:
+            print(f"\n[Cron] {len(jobs)} 个任务")
+            for job in jobs:
+                print(f"  • {job['id']}: {job.get('task', 'N/A')}")
+        print()
+
+    def print_hooks(self) -> None:
+        """Print hook list."""
+        from minicode.tools.hook_tools import HookManager
+        hm = HookManager()
+        hooks = hm.list_hooks()
+        if not hooks or all(not v for v in hooks.values()):
+            print("\n[钩子] 暂无活跃钩子")
+        else:
+            print(f"\n[钩子]")
+            for hook_type, hook_list in hooks.items():
+                if hook_list:
+                    print(f"  {hook_type}: {len(hook_list)} 个")
+                    for h in hook_list:
+                        print(f"    • {h}")
+        print()
+
+    def do_compact(self) -> None:
+        """Compact conversation history."""
+        from minicode.tools.compact_tools import compact_history
+        # 保留最近3条消息
+        result = compact_history.invoke({"keep_recent": 3})
+        print(f"\n[压缩] {result}")
         print()
 
     def print_response(self, messages: list) -> None:
@@ -111,18 +220,61 @@ class REPL:
             return True
 
         if cmd == "/team":
-            stats = self.runner.get_stats()
-            teammates = stats.get("session", {}).get("teammates", [])
-            if teammates:
+            from minicode.tools.team_tools import TeamManager
+            tm = TeamManager()
+            members = tm.list()
+            if members:
                 print("\n[团队]")
-                for t in teammates:
-                    print(f"  {t['name']} ({t['role']}): {'idle' if t['idle'] else 'working'}")
+                for m in members:
+                    print(f"  {m.get('name', 'anonymous')} ({m.get('role', 'member')})")
             else:
                 print("\n[团队] 暂无成员")
             return True
 
         if cmd == "/tasks":
-            print("\n[任务] 查看中...")
+            from minicode.tools.task_tools import TaskManager
+            tm = TaskManager()
+            tasks = tm.list_all()
+            if not tasks:
+                print("\n[任务] 暂无任务")
+            else:
+                print(f"\n[任务] {len(tasks)} 个")
+                for t in tasks:
+                    status = t.get('status', 'pending')
+                    subject = t.get('subject', 'N/A')
+                    print(f"  [{status}] {subject}")
+            return True
+
+        if cmd == "/todos":
+            self.print_todos()
+            return True
+
+        if cmd == "/status":
+            self.print_status()
+            return True
+
+        if cmd == "/tools":
+            self.print_tools()
+            return True
+
+        if cmd == "/permission":
+            self.print_permission(cmd)
+            return True
+
+        if cmd == "/skills":
+            self.print_skills()
+            return True
+
+        if cmd == "/cron":
+            self.print_cron()
+            return True
+
+        if cmd == "/hooks":
+            self.print_hooks()
+            return True
+
+        if cmd == "/compact":
+            self.do_compact()
             return True
 
         if cmd.startswith("/preference "):
