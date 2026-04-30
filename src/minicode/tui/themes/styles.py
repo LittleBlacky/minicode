@@ -31,7 +31,6 @@ Screen {{
 /* Title bar area */
 #title-bar {{
     height: 1;
-    layout: horizontal;
     background: {theme.HEADER_BG};
 }}
 
@@ -58,8 +57,6 @@ Screen {{
 /* Window controls */
 #window-controls {{
     width: auto;
-    layout: horizontal;
-    align: right;
 }}
 
 .window-btn {{
@@ -80,10 +77,9 @@ Screen {{
 }}
 
 /* ============================================
-   Main Container (Horizontal Layout)
+   Main Container
    ============================================ */
 #main-container {{
-    layout: horizontal;
     height: 1fr;
     width: 100%;
 }}
@@ -96,14 +92,12 @@ Screen {{
     height: 100%;
     background: {theme.BACKGROUND};
     border: solid {theme.BORDER};
-    border-title-color: {theme.TEXT_MUTED};
     margin: 1 1 1 2;
     padding: 0 1;
 }}
 
 #message-scroll {{
     height: 1fr;
-    scrollbar-color: {theme.SCROLLBAR_COLOR} {theme.SCROLLBAR_BG};
 }}
 
 /* Message bubbles */
@@ -135,9 +129,6 @@ Screen {{
     border-title-color: {theme.ERROR};
     background: {theme.ERROR_BG};
 }}
-
-/* Message animations - handled via Textual API */
-/* Note: CSS @keyframes not supported in Textual */
 
 /* Code blocks */
 .code-block {{
@@ -171,7 +162,6 @@ Screen {{
 
 #sidebar-tabs {{
     height: 3;
-    layout: horizontal;
     background: {theme.SURFACE};
     border-bottom: solid {theme.BORDER};
 }}
@@ -181,13 +171,12 @@ Screen {{
     height: 100%;
     background: {theme.SURFACE};
     color: {theme.TEXT_MUTED};
-    content-align: center middle;
 }}
 
 .sidebar-tab.active {{
     background: {theme.SIDEBAR_BG};
     color: {theme.TEXT};
-    border-bottom: tall {theme.PRIMARY};
+    border-bottom: solid {theme.PRIMARY};
 }}
 
 .sidebar-tab:hover {{
@@ -230,8 +219,6 @@ Screen {{
     text-style: bold;
 }}
 
-/* Tool status - pulse animation not supported in Textual CSS */
-
 .tool-status {{
     color: {theme.TEXT_MUTED};
 }}
@@ -255,7 +242,7 @@ Screen {{
 }}
 
 .history-item.selected {{
-    background: {theme.PRIMARY_HOVER}40;
+    background: {theme.SURFACE_HOVER};
     color: {theme.TEXT};
 }}
 
@@ -272,7 +259,6 @@ Screen {{
 }}
 
 #input-row {{
-    layout: horizontal;
     height: auto;
 }}
 
@@ -299,8 +285,6 @@ Input:focus {{
     border: solid {theme.FOCUS};
 }}
 
-/* Placeholder styling not supported in Textual CSS */
-
 /* ============================================
    Status Bar
    ============================================ */
@@ -319,7 +303,6 @@ Input:focus {{
 
 #status-center {{
     width: 1fr;
-    align: center middle;
 }}
 
 #status-right {{
@@ -343,7 +326,6 @@ Input:focus {{
     max-height: 20;
     background: {theme.SURFACE};
     border: solid {theme.BORDER};
-    box-shadow: 0 4 8 {theme.BACKGROUND}80;
 }}
 
 #command-palette-input {{
@@ -368,7 +350,7 @@ Input:focus {{
 }}
 
 .command-item.selected {{
-    background: {theme.PRIMARY_HOVER}40;
+    background: {theme.SURFACE_HOVER};
 }}
 
 .command-name {{
@@ -382,7 +364,6 @@ Input:focus {{
 
 .command-key {{
     color: {theme.TEXT_DIM};
-    align: right;
 }}
 
 /* ============================================
@@ -395,7 +376,6 @@ Input:focus {{
     max-height: 15;
     background: {theme.SURFACE};
     border: solid {theme.BORDER};
-    box-shadow: 0 4 8 {theme.BACKGROUND}80;
 }}
 
 .completion-item {{
@@ -405,7 +385,7 @@ Input:focus {{
 
 .completion-item:hover,
 .completion-item.selected {{
-    background: {theme.PRIMARY_HOVER}40;
+    background: {theme.SURFACE_HOVER};
 }}
 
 .completion-type {{
@@ -456,13 +436,9 @@ ScrollableContainer > .scrollbar-grip:hover {{
     text-style: italic;
 }}
 
-/* Thinking dots animation - handled via Textual API */
-
 .thinking {{
     color: {theme.WARNING};
 }}
-
-/* ::after pseudo-element not supported in Textual CSS */
 
 /* ============================================
    ASCII Art Container
@@ -470,7 +446,6 @@ ScrollableContainer > .scrollbar-grip:hover {{
 #ascii-art {{
     width: 100%;
     height: auto;
-    content-align: center middle;
     color: {theme.SUCCESS};
     text-style: bold;
     padding: 0;
@@ -491,7 +466,6 @@ ScrollableContainer > .scrollbar-grip:hover {{
     background: {theme.SURFACE};
     border: solid {theme.BORDER};
     padding: 1 2;
-    box-shadow: 0 4 8 {theme.BACKGROUND}80;
 }}
 
 .notification.success {{
@@ -516,13 +490,6 @@ ScrollableContainer > .scrollbar-grip:hover {{
 Dialog {{
     background: {theme.SURFACE};
     border: solid {theme.BORDER};
-    box-shadow: 0 8 16 {theme.BACKGROUND}80;
-}}
-
-Dialog > .dialog-window {{
-    background: {theme.SURFACE};
-    border: solid {theme.BORDER};
-    padding: 2;
 }}
 
 #dialog-title {{
@@ -537,7 +504,6 @@ Dialog > .dialog-window {{
 }}
 
 #dialog-buttons {{
-    layout: horizontal;
     height: auto;
     align: right;
     padding: 1 0 0 0;
@@ -549,10 +515,6 @@ Dialog > .dialog-window {{
 ProgressBar {{
     color: {theme.PRIMARY};
     background: {theme.SURFACE_HOVER};
-}}
-
-ProgressBar > .progress-bar {{
-    color: {theme.SUCCESS};
 }}
 
 /* ============================================
@@ -578,7 +540,6 @@ def get_theme_css(theme_name: str = "dark") -> str:
     """
     if theme_name == "dark":
         return DARK_CSS
-    # Future themes can be added here
     return DARK_CSS
 
 
