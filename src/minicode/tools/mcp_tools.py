@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
-import time
 from pathlib import Path
 from typing import Optional, Any
 
@@ -12,56 +10,6 @@ from langchain_core.tools import tool
 
 WORKDIR = Path.cwd()
 STORAGE_DIR = WORKDIR / ".mini-agent-cli"
-
-
-class _EventLoopHolder:
-    """持有持久化事件循环的类."""
-    _instance: Optional["_EventLoopHolder"] = None
-    _lock = threading.Lock()
-
-    def __init__(self):
-        self.loop: Optional[asyncio.AbstractEventLoop] = None
-        self.thread: Optional[threading.Thread] = None
-        self._started = False
-
-    @classmethod
-    def get_instance(cls) -> "_EventLoopHolder":
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = cls()
-            return cls._instance
-
-    def get_loop(self) -> asyncio.AbstractEventLoop:
-        with self._lock:
-            if self.loop is None or self.loop.is_closed():
-                self._start_loop()
-            return self.loop
-
-    def _start_loop(self):
-        """启动事件循环线程."""
-        if self._started:
-            return
-
-        def run_loop():
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
-            self.loop.run_forever()
-
-        self.thread = threading.Thread(target=run_loop, daemon=True)
-        self.thread.start()
-        self._started = True
-
-        # 等待循环就绪
-        while self.loop is None or not self.loop.is_running():
-            time.sleep(0.01)
-
-
-def _run_async(coro):
-    """在持久化事件循环中运行协程."""
-    holder = _EventLoopHolder.get_instance()
-    loop = holder.get_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=120)
 
 
 class MultiServerMCP:
@@ -95,34 +43,27 @@ class MultiServerMCP:
             from langchain_mcp_adapters.client import MultiServerMCPClient
             from langchain_mcp_adapters.sessions import StdioConnection, SSEConnection, WebsocketConnection, StreamableHttpConnection
 
-            # 构建连接对象
             connections = {}
-            for name, config in self._servers.items():
-                transport = config.get("transport")
+            for name, cfg in self._servers.items():
+                transport = cfg.get("transport")
                 if transport == "stdio":
                     connections[name] = StdioConnection(
-                        command=config.get("command", ""),
-                        args=config.get("args", []),
-                        env=config.get("env", {}),
+                        command=cfg.get("command", ""),
+                        args=cfg.get("args", []),
+                        env=cfg.get("env", {}),
                         transport="stdio",
                     )
                 elif transport == "sse":
-                    connections[name] = SSEConnection(url=config.get("url", ""), transport="sse")
+                    connections[name] = SSEConnection(url=cfg.get("url", ""), transport="sse")
                 elif transport == "websocket":
-                    connections[name] = WebsocketConnection(url=config.get("url", ""), transport="websocket")
+                    connections[name] = WebsocketConnection(url=cfg.get("url", ""), transport="websocket")
                 elif transport == "http":
-                    connections[name] = StreamableHttpConnection(url=config.get("url", ""), transport="http")
+                    connections[name] = StreamableHttpConnection(url=cfg.get("url", ""), transport="http")
 
             self._client = MultiServerMCPClient(connections=connections or None)
-            # 不要在这里调用 get_tools()，这会导致多个服务器时挂起
-            # 让用户显式调用 refresh() 来获取工具
 
-    def _connect_sync(self, name: str, config: dict) -> str:
-        """同步连接方法，在线程池中执行"""
-        return _run_async(self._connect_async(name, config))
-
-    async def _connect_async(self, name: str, config: dict) -> str:
-        """异步连接方法"""
+    async def connect(self, name: str, config: dict) -> str:
+        """连接 MCP 服务器."""
         if name in self._servers:
             return f"[Error] Server '{name}' already exists"
 
@@ -134,7 +75,6 @@ class MultiServerMCP:
         self._save_config()
 
         try:
-            # 只初始化客户端，不获取工具（避免多服务器挂起）
             await self._ensure_client()
             return f"[MCP] Connected to {name} (call mcp_refresh to load tools)"
         except Exception as e:
@@ -142,10 +82,6 @@ class MultiServerMCP:
                 del self._servers[name]
                 self._save_config()
             return f"[Error] Failed to connect: {e}"
-
-    def connect(self, name: str, config: dict) -> str:
-        """连接 MCP 服务器（同步接口）"""
-        return self._connect_sync(name, config)
 
     def disconnect(self, name: str) -> str:
         """断开 MCP 服务器."""
@@ -155,7 +91,6 @@ class MultiServerMCP:
         del self._servers[name]
         self._save_config()
 
-        # 重置客户端
         self._client = None
         self._tools = []
 
@@ -172,20 +107,19 @@ class MultiServerMCP:
         """获取所有可用的 LangChain 工具."""
         return self._tools
 
-    def refresh(self) -> int:
-        """刷新工具列表（同步接口）"""
-        return _run_async(self._refresh_async())
-
     async def _refresh_async(self) -> int:
-        """刷新工具列表（异步实现）"""
+        """刷新工具列表（异步实现）."""
         if self._client is None:
             await self._ensure_client()
 
-        # 获取工具
         if self._client is not None:
             self._tools = await self._client.get_tools()
 
         return len(self._tools)
+
+    async def refresh(self) -> int:
+        """刷新工具列表."""
+        return await self._refresh_async()
 
 
 # 全局 MCP 客户端实例
@@ -200,10 +134,10 @@ def get_mcp_client() -> MultiServerMCP:
     return _mcp_client
 
 
-# ============ LangChain Tools ============
+# ============ LangChain Tools (异步) ============
 
 @tool
-def mcp_connect(
+async def mcp_connect(
     server_name: str,
     transport: str,
     command: str = "",
@@ -226,12 +160,10 @@ def mcp_connect(
     cfg = {"transport": transport}
     if transport == "stdio":
         cfg["command"] = command
-        # cmd_args can be passed as string or list
         args = cmd_args
         if isinstance(args, str):
             args = args.split() if args else []
         cfg["args"] = args
-        # env can be passed as dict or JSON string
         if isinstance(env, str):
             try:
                 env = json.loads(env) if env else {}
@@ -243,31 +175,24 @@ def mcp_connect(
     else:
         return f"[Error] Unknown transport: {transport}"
 
-    # 使用同步接口，自动处理事件循环
-    result = client.connect(server_name, cfg)
+    result = await client.connect(server_name, cfg)
 
-    # 自动刷新全局工具映射
     if "Connected" in result:
         try:
             from minicode.agent.graph import refresh_mcp_tools
             refresh_mcp_tools()
         except Exception:
-            pass  # 不影响连接结果
+            pass
 
     return result
 
 
 @tool
-def mcp_disconnect(server_name: str) -> str:
-    """Disconnect from an MCP server.
-
-    Args:
-        server_name: Name of the server to disconnect
-    """
+async def mcp_disconnect(server_name: str) -> str:
+    """Disconnect from an MCP server."""
     client = get_mcp_client()
     result = client.disconnect(server_name)
 
-    # 刷新全局工具映射
     try:
         from minicode.agent.graph import refresh_mcp_tools
         refresh_mcp_tools()
@@ -312,7 +237,6 @@ mcp_connect(
     for srv in servers:
         lines.append(f"- **{srv['name']}** ({srv['config']['transport']})")
 
-    # 获取工具
     tools = client.get_tools()
     if tools:
         lines.append(f"\n# Available Tools ({len(tools)})")
@@ -341,21 +265,17 @@ def mcp_get_tools() -> str:
 
 
 @tool
-def mcp_refresh() -> str:
+async def mcp_refresh() -> str:
     """Refresh MCP tools from all connected servers."""
     client = get_mcp_client()
+    count = await client.refresh()
 
-    # 使用同步接口
-    count = client.refresh()
-
-    # 更新全局工具映射
     try:
         from minicode.agent.graph import refresh_mcp_tools
         refresh_mcp_tools()
+        return f"[MCP] Refreshed, {count} tools available and registered"
     except Exception as e:
         return f"[MCP] Refreshed client, {count} tools available. Warning: {e}"
-
-    return f"[MCP] Refreshed, {count} tools available and registered"
 
 
 # 导出工具列表
