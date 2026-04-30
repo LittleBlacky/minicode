@@ -236,9 +236,8 @@ Screen {{
     color: {theme.TEXT_MUTED};
 }}
 
-.tool-status.running::before {{
-    content: "●";
-    /* Animation handled via Textual API */
+.tool-status-running {{
+    color: {theme.PRIMARY};
 }}
 
 /* Command history items */

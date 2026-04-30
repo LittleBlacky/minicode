@@ -63,7 +63,13 @@ def refresh_mcp_tools() -> int:
         client = get_mcp_client()
 
         # 刷新 MCP 客户端的工具列表
-        client.refresh()
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.create_task(client.refresh())
+        except RuntimeError:
+            # No running loop, use sync fallback
+            pass
 
         # 直接从客户端获取 MCP 工具
         new_tools = client.get_tools()
