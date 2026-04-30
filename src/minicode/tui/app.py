@@ -116,11 +116,11 @@ class MiniCodeTUI(App):
 
         # Show welcome message
         log = self.query_one("#message-log", RichLog)
-        log.write_line("[bold green]Welcome to MiniCode![/bold green]")
-        log.write_line("[dim]Type /help for available commands[/dim]")
-        log.write_line("[dim]Press Ctrl+K for command palette[/dim]")
-        log.write_line("[dim]Press Ctrl+A to toggle tools panel[/dim]")
-        log.write_line("")
+        log.write("[bold green]Welcome to MiniCode![/bold green]\n")
+        log.write("[dim]Type /help for available commands[/dim]\n")
+        log.write("[dim]Press Ctrl+K for command palette[/dim]\n")
+        log.write("[dim]Press Ctrl+A to toggle tools panel[/dim]\n")
+        log.write("\n")
 
         # Update status
         self._update_status()
@@ -139,7 +139,7 @@ class MiniCodeTUI(App):
         """Clear the message log."""
         log = self.query_one("#message-log", RichLog)
         log.clear()
-        log.write_line("[dim]Screen cleared.[/dim]")
+        log.write("[dim]Screen cleared.[/dim]\n")
 
     def action_recall(self) -> None:
         """Recall last command."""
@@ -262,9 +262,9 @@ class MiniCodeTUI(App):
 
         # Display user message
         timestamp = datetime.now().strftime("%H:%M")
-        log.write_line(f"[dim]{timestamp}[/dim] [bold cyan]You:[/bold cyan]")
-        log.write_line(f"  {command}")
-        log.write_line("")
+        log.write(f"[dim]{timestamp}[/dim] [bold cyan]You:[/bold cyan]\n")
+        log.write(f"  {command}\n")
+        log.write("\n")
 
         # Update thinking state
         self.is_thinking = True
@@ -284,16 +284,16 @@ class MiniCodeTUI(App):
 
                 # Display response
                 timestamp = datetime.now().strftime("%H:%M")
-                log.write_line(f"[dim]{timestamp}[/dim] [bold green]MiniCode:[/bold green]")
+                log.write(f"[dim]{timestamp}[/dim] [bold green]MiniCode:[/bold green]\n")
                 # Parse and display markdown
                 for line in content.split("\n"):
-                    log.write_line(f"  {line}")
-                log.write_line("")
+                    log.write(f"  {line}\n")
+                log.write("\n")
             else:
-                log.write_line("[bold red]Error:[/bold red] No response")
+                log.write("[bold red]Error:[/bold red] No response")
 
         except Exception as e:
-            log.write_line(f"[bold red]Error:[/bold red] {e}")
+            log.write(f"[bold red]Error:[/bold red] {e}")
 
         # Reset thinking state
         self.is_thinking = False
@@ -347,8 +347,8 @@ class MiniCodeTUI(App):
         if cmd in commands:
             await commands[cmd](log, args)
         else:
-            log.write_line(f"[yellow]Unknown command:[/yellow] {cmd}")
-            log.write_line("[dim]Type /help for available commands[/dim]")
+            log.write(f"[yellow]Unknown command:[/yellow] {cmd}\n")
+            log.write("[dim]Type /help for available commands[/dim]\n")
 
     # ============ Command Handlers ============
 
@@ -402,7 +402,7 @@ class MiniCodeTUI(App):
 [cyan]F3[/cyan]              History
 [cyan]F4[/cyan]              Session
 """
-        log.write_line(help_text)
+        log.write(help_text + "\n")
 
     async def _cmd_help(self, log: RichLog, args: str) -> None:
         """Show help."""
@@ -411,7 +411,7 @@ class MiniCodeTUI(App):
     async def _cmd_clear(self, log: RichLog, args: str) -> None:
         """Clear screen."""
         log.clear()
-        log.write_line("[dim]Screen cleared.[/dim]")
+        log.write("[dim]Screen cleared.[/dim]")
 
     async def _cmd_history(self, log: RichLog, args: str) -> None:
         """Show history."""
@@ -422,13 +422,13 @@ class MiniCodeTUI(App):
             for i, h in enumerate(self.history[start:], start + 1):
                 truncated = h[:50] + "..." if len(h) > 50 else h
                 history_text += f"  {i}. {truncated}\n"
-            log.write_line(history_text)
+            log.write(history_text)
         else:
-            log.write_line("[dim]No history yet.[/dim]")
+            log.write("[dim]No history yet.[/dim]")
 
     async def _cmd_quit(self, log: RichLog, args: str) -> None:
         """Quit."""
-        log.write_line("[dim]Goodbye! 🐱[/dim]")
+        log.write("[dim]Goodbye! 🐱[/dim]")
         self.exit()
 
     async def _cmd_status(self, log: RichLog, args: str) -> None:
@@ -443,33 +443,33 @@ class MiniCodeTUI(App):
             model_name = "unknown"
 
         uptime = datetime.now() - self.start_time
-        log.write_line("[bold cyan]Status:[/bold cyan]")
-        log.write_line(f"  Status: [green]Ready[/green]")
-        log.write_line(f"  Mode: {self.mode}")
-        log.write_line(f"  Model: {model_provider}/{model_name}")
-        log.write_line(f"  Messages: {len(self.messages)}")
-        log.write_line(f"  Commands: {len(self.history)}")
-        log.write_line(f"  Uptime: {uptime}")
+        log.write("[bold cyan]Status:[/bold cyan]")
+        log.write(f"  Status: [green]Ready[/green]")
+        log.write(f"  Mode: {self.mode}")
+        log.write(f"  Model: {model_provider}/{model_name}")
+        log.write(f"  Messages: {len(self.messages)}")
+        log.write(f"  Commands: {len(self.history)}")
+        log.write(f"  Uptime: {uptime}")
 
     async def _cmd_config(self, log: RichLog, args: str) -> None:
         """Show config."""
         try:
             from minicode.services.config import get_config_manager
             config = get_config_manager()
-            log.write_line("[bold cyan]Configuration:[/bold cyan]")
-            log.write_line(f"  Model Provider: {config.get('model.provider')}")
-            log.write_line(f"  Model: {config.get('model.model')}")
-            log.write_line(f"  Permission Mode: {config.get('permissions.mode')}")
+            log.write("[bold cyan]Configuration:[/bold cyan]")
+            log.write(f"  Model Provider: {config.get('model.provider')}")
+            log.write(f"  Model: {config.get('model.model')}")
+            log.write(f"  Permission Mode: {config.get('permissions.mode')}")
         except Exception as e:
-            log.write_line(f"[dim]Config not available: {e}[/dim]")
+            log.write(f"[dim]Config not available: {e}[/dim]")
 
     async def _cmd_session(self, log: RichLog, args: str) -> None:
         """Show session."""
-        log.write_line("[bold cyan]Session:[/bold cyan]")
-        log.write_line(f"  Messages: {len(self.messages)}")
-        log.write_line(f"  History: {len(self.history)}")
-        log.write_line(f"  Mode: {self.mode}")
-        log.write_line(f"  Started: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        log.write("[bold cyan]Session:[/bold cyan]")
+        log.write(f"  Messages: {len(self.messages)}")
+        log.write(f"  History: {len(self.history)}")
+        log.write(f"  Mode: {self.mode}")
+        log.write(f"  Started: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     async def _cmd_memory(self, log: RichLog, args: str) -> None:
         """Show memories."""
@@ -479,13 +479,13 @@ class MiniCodeTUI(App):
             memories = list(mgr.memory_dir.glob("*.md"))
             memories = [m for m in memories if m.name != "MEMORY.md"]
             if memories:
-                log.write_line("[bold cyan]Saved Memories:[/bold cyan]")
+                log.write("[bold cyan]Saved Memories:[/bold cyan]")
                 for m in memories[:10]:
-                    log.write_line(f"  - {m.stem}")
+                    log.write(f"  - {m.stem}")
             else:
-                log.write_line("[dim]No memories saved.[/dim]")
+                log.write("[dim]No memories saved.[/dim]")
         except Exception as e:
-            log.write_line(f"[dim]Memory not available: {e}[/dim]")
+            log.write(f"[dim]Memory not available: {e}[/dim]")
 
     async def _cmd_skills(self, log: RichLog, args: str) -> None:
         """Show skills."""
@@ -494,52 +494,52 @@ class MiniCodeTUI(App):
             mgr = get_skill_manager()
             skills = mgr.list()
             if skills:
-                log.write_line("[bold cyan]Available Skills:[/bold cyan]")
+                log.write("[bold cyan]Available Skills:[/bold cyan]")
                 for s in skills:
-                    log.write_line(f"  - {s['name']}: {s['description']}")
+                    log.write(f"  - {s['name']}: {s['description']}")
             else:
-                log.write_line("[dim]No skills available.[/dim]")
+                log.write("[dim]No skills available.[/dim]")
         except Exception as e:
-            log.write_line(f"[dim]Skills not available: {e}[/dim]")
+            log.write(f"[dim]Skills not available: {e}[/dim]")
 
     async def _cmd_context(self, log: RichLog, args: str) -> None:
         """Show context."""
-        log.write_line("[bold cyan]Context:[/bold cyan]")
-        log.write_line(f"  Messages: {len(self.messages)}")
-        log.write_line(f"  History: {len(self.history)}")
-        log.write_line(f"  Mode: {self.mode}")
+        log.write("[bold cyan]Context:[/bold cyan]")
+        log.write(f"  Messages: {len(self.messages)}")
+        log.write(f"  History: {len(self.history)}")
+        log.write(f"  Mode: {self.mode}")
 
     async def _cmd_stat(self, log: RichLog, args: str) -> None:
         """Show statistics."""
         uptime = datetime.now() - self.start_time
-        log.write_line("[bold cyan]Statistics:[/bold cyan]")
-        log.write_line(f"  Total Messages: {len(self.messages)}")
-        log.write_line(f"  Total Commands: {len(self.history)}")
-        log.write_line(f"  Commands This Session: {self.command_count}")
-        log.write_line(f"  Uptime: {uptime}")
+        log.write("[bold cyan]Statistics:[/bold cyan]")
+        log.write(f"  Total Messages: {len(self.messages)}")
+        log.write(f"  Total Commands: {len(self.history)}")
+        log.write(f"  Commands This Session: {self.command_count}")
+        log.write(f"  Uptime: {uptime}")
 
     async def _cmd_compact(self, log: RichLog, args: str) -> None:
         """Compact context."""
-        log.write_line("[dim]Context will be compacted before next response.[/dim]")
+        log.write("[dim]Context will be compacted before next response.[/dim]")
 
     async def _cmd_retry(self, log: RichLog, args: str) -> None:
         """Retry last command."""
         if self.history:
             last_cmd = self.history[-1]
-            log.write_line(f"[dim]Retrying: {last_cmd}[/dim]")
+            log.write(f"[dim]Retrying: {last_cmd}[/dim]")
             await self.run_command(last_cmd)
         else:
-            log.write_line("[dim]No command to retry.[/dim]")
+            log.write("[dim]No command to retry.[/dim]")
 
     async def _cmd_mode(self, log: RichLog, args: str) -> None:
         """Change mode."""
         if args in ("default", "auto", "plan"):
             self.mode = args
             self._update_prompt_indicator()
-            log.write_line(f"[green]Mode changed to: {self.mode}[/green]")
+            log.write(f"[green]Mode changed to: {self.mode}[/green]")
         else:
-            log.write_line(f"[yellow]Invalid mode: {args}[/yellow]")
-            log.write_line("[dim]Available modes: default, auto, plan[/dim]")
+            log.write(f"[yellow]Invalid mode: {args}[/yellow]")
+            log.write("[dim]Available modes: default, auto, plan[/dim]")
 
     async def _cmd_model(self, log: RichLog, args: str) -> None:
         """Change model."""
@@ -548,11 +548,11 @@ class MiniCodeTUI(App):
                 from minicode.services.config import get_config_manager
                 config = get_config_manager()
                 config.set("model.model", args)
-                log.write_line(f"[green]Model changed to: {args}[/green]")
+                log.write(f"[green]Model changed to: {args}[/green]")
             except Exception as e:
-                log.write_line(f"[yellow]Failed: {e}[/yellow]")
+                log.write(f"[yellow]Failed: {e}[/yellow]")
         else:
-            log.write_line("[dim]Usage: /model <model-name>[/dim]")
+            log.write("[dim]Usage: /model <model-name>[/dim]")
 
     async def _cmd_provider(self, log: RichLog, args: str) -> None:
         """Change provider."""
@@ -561,44 +561,44 @@ class MiniCodeTUI(App):
                 from minicode.services.config import get_config_manager
                 config = get_config_manager()
                 config.set("model.provider", args)
-                log.write_line(f"[green]Provider changed to: {args}[/green]")
+                log.write(f"[green]Provider changed to: {args}[/green]")
             except Exception as e:
-                log.write_line(f"[yellow]Failed: {e}[/yellow]")
+                log.write(f"[yellow]Failed: {e}[/yellow]")
         else:
-            log.write_line("[yellow]Invalid provider[/yellow]")
-            log.write_line("[dim]Available providers: anthropic, openai[/dim]")
+            log.write("[yellow]Invalid provider[/yellow]")
+            log.write("[dim]Available providers: anthropic, openai[/dim]")
 
     async def _cmd_theme(self, log: RichLog, args: str) -> None:
         """Change theme."""
-        log.write_line("[dim]Theme change not yet implemented[/dim]")
+        log.write("[dim]Theme change not yet implemented[/dim]")
 
     async def _cmd_tools(self, log: RichLog, args: str) -> None:
         """List tools."""
         try:
             from minicode.tools.registry import ALL_TOOLS
-            log.write_line(f"[bold cyan]Available Tools ({len(ALL_TOOLS)}):[/bold cyan]")
+            log.write(f"[bold cyan]Available Tools ({len(ALL_TOOLS)}):[/bold cyan]")
             for tool in ALL_TOOLS[:30]:
-                log.write_line(f"  - {tool.name}")
+                log.write(f"  - {tool.name}")
             if len(ALL_TOOLS) > 30:
-                log.write_line(f"  [dim]... and {len(ALL_TOOLS) - 30} more[/dim]")
+                log.write(f"  [dim]... and {len(ALL_TOOLS) - 30} more[/dim]")
         except Exception as e:
-            log.write_line(f"[dim]Tools not available: {e}[/dim]")
+            log.write(f"[dim]Tools not available: {e}[/dim]")
 
     async def _cmd_env(self, log: RichLog, args: str) -> None:
         """Show environment."""
         import os
-        log.write_line("[bold cyan]Environment:[/bold cyan]")
-        log.write_line(f"  Python: {os.sys.version.split()[0]}")
-        log.write_line(f"  CWD: {os.getcwd()}")
+        log.write("[bold cyan]Environment:[/bold cyan]")
+        log.write(f"  Python: {os.sys.version.split()[0]}")
+        log.write(f"  CWD: {os.getcwd()}")
 
     async def _cmd_keys(self, log: RichLog, args: str) -> None:
         """Show API keys status."""
         import os
         has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
         has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-        log.write_line("[bold cyan]API Keys:[/bold cyan]")
-        log.write_line(f"  ANTHROPIC_API_KEY: {'[green]Set[/green]' if has_anthropic else '[red]Not set[/red]'}")
-        log.write_line(f"  OPENAI_API_KEY: {'[green]Set[/green]' if has_openai else '[red]Not set[/red]'}")
+        log.write("[bold cyan]API Keys:[/bold cyan]")
+        log.write(f"  ANTHROPIC_API_KEY: {'[green]Set[/green]' if has_anthropic else '[red]Not set[/red]'}")
+        log.write(f"  OPENAI_API_KEY: {'[green]Set[/green]' if has_openai else '[red]Not set[/red]'}")
 
     async def _cmd_export(self, log: RichLog, args: str) -> None:
         """Export session."""
@@ -612,11 +612,11 @@ class MiniCodeTUI(App):
             try:
                 with open(args, "w") as f:
                     json.dump(data, f, indent=2)
-                log.write_line(f"[green]Session exported to: {args}[/green]")
+                log.write(f"[green]Session exported to: {args}[/green]")
             except Exception as e:
-                log.write_line(f"[red]Error: {e}[/red]")
+                log.write(f"[red]Error: {e}[/red]")
         else:
-            log.write_line("[yellow]Usage: /export <filepath>[/yellow]")
+            log.write("[yellow]Usage: /export <filepath>[/yellow]")
 
     async def _cmd_import(self, log: RichLog, args: str) -> None:
         """Import session."""
@@ -628,21 +628,21 @@ class MiniCodeTUI(App):
                 self.messages = [HumanMessage(content=m) for m in data.get("messages", [])]
                 self.history = data.get("history", [])
                 self.mode = data.get("mode", "default")
-                log.write_line(f"[green]Session imported from: {args}[/green]")
+                log.write(f"[green]Session imported from: {args}[/green]")
             except Exception as e:
-                log.write_line(f"[red]Error: {e}[/red]")
+                log.write(f"[red]Error: {e}[/red]")
         else:
-            log.write_line("[yellow]Usage: /import <filepath>[/yellow]")
+            log.write("[yellow]Usage: /import <filepath>[/yellow]")
 
     async def _cmd_time(self, log: RichLog, args: str) -> None:
         """Show current time."""
         now = datetime.now()
-        log.write_line(f"[bold cyan]Current Time:[/bold cyan] {now.strftime('%Y-%m-%d %H:%M:%S')}")
+        log.write(f"[bold cyan]Current Time:[/bold cyan] {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
     async def _cmd_uptime(self, log: RichLog, args: str) -> None:
         """Show uptime."""
         uptime = datetime.now() - self.start_time
-        log.write_line(f"[bold cyan]Uptime:[/bold cyan] {uptime}")
+        log.write(f"[bold cyan]Uptime:[/bold cyan] {uptime}")
 
     async def _cmd_cat(self, log: RichLog, args: str) -> None:
         """Show cat animation."""
@@ -651,7 +651,7 @@ class MiniCodeTUI(App):
         await asyncio.sleep(1.5)
         self.cat_animator.set_state("idle")
         self._update_ascii_art("idle")
-        log.write_line("[accent]🐱 Meow![/accent]")
+        log.write("[accent]🐱 Meow![/accent]")
 
 
 async def run_tui(runner: AgentRunner) -> None:
