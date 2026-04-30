@@ -136,21 +136,8 @@ Screen {{
     background: {theme.ERROR_BG};
 }}
 
-/* Message animations */
-@keyframes message-in {{
-    from {{
-        opacity: 0;
-        transform: translate-y(10px);
-    }}
-    to {{
-        opacity: 1;
-        transform: translate-y(0);
-    }}
-}}
-
-.message-bubble {{
-    animation: message-in 200ms ease-out;
-}}
+/* Message animations - handled via Textual API */
+/* Note: CSS @keyframes not supported in Textual */
 
 /* Code blocks */
 .code-block {{
@@ -243,18 +230,15 @@ Screen {{
     text-style: bold;
 }}
 
+/* Tool status - pulse animation not supported in Textual CSS */
+
 .tool-status {{
     color: {theme.TEXT_MUTED};
 }}
 
-@keyframes pulse {{
-    0%, 100% {{ opacity: 0.5; }}
-    50% {{ opacity: 1; }}
-}}
-
 .tool-status.running::before {{
     content: "●";
-    animation: pulse 1s ease-in-out infinite;
+    /* Animation handled via Textual API */
 }}
 
 /* Command history items */
@@ -475,11 +459,7 @@ ScrollableContainer > .scrollbar-grip:hover {{
     text-style: italic;
 }}
 
-@keyframes thinking-dots {{
-    0% {{ content: "."; }}
-    33% {{ content: ".."; }}
-    66% {{ content: "..."; }}
-}}
+/* Thinking dots animation - handled via Textual API */
 
 .thinking {{
     color: {theme.WARNING};
@@ -487,7 +467,7 @@ ScrollableContainer > .scrollbar-grip:hover {{
 
 .thinking::after {{
     content: "...";
-    animation: thinking-dots 1s steps(3, end) infinite;
+    /* Animation handled via Textual API */
 }}
 
 /* ============================================
