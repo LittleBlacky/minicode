@@ -508,9 +508,9 @@ class REPL:
             return True
 
         if cmd == "/team":
-            from minicode.tools.team_tools import TeamManager
-            tm = TeamManager()
-            members = tm.list()
+            from minicode.tools.team_tools import get_teammate_manager
+            tm = get_teammate_manager()
+            members = tm.list_teammates()
             if members:
                 print("\n[团队]")
                 for m in members:
