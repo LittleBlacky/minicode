@@ -203,15 +203,15 @@ Screen {{
 }}
 
 .tool-item.running {{
-    border-left: solid 3 {theme.WARNING};
+    border-left: solid {theme.WARNING};
 }}
 
 .tool-item.success {{
-    border-left: solid 3 {theme.SUCCESS};
+    border-left: solid {theme.SUCCESS};
 }}
 
 .tool-item.error {{
-    border-left: solid 3 {theme.ERROR};
+    border-left: solid {theme.ERROR};
 }}
 
 .tool-name {{
@@ -469,19 +469,19 @@ ScrollableContainer > .scrollbar-grip:hover {{
 }}
 
 .notification.success {{
-    border-left: solid 3 {theme.SUCCESS};
+    border-left: solid {theme.SUCCESS};
 }}
 
 .notification.error {{
-    border-left: solid 3 {theme.ERROR};
+    border-left: solid {theme.ERROR};
 }}
 
 .notification.warning {{
-    border-left: solid 3 {theme.WARNING};
+    border-left: solid {theme.WARNING};
 }}
 
 .notification.info {{
-    border-left: solid 3 {theme.PRIMARY};
+    border-left: solid {theme.PRIMARY};
 }}
 
 /* ============================================
@@ -505,7 +505,7 @@ Dialog {{
 
 #dialog-buttons {{
     height: auto;
-    align: right;
+    align: right middle;
     padding: 1 0 0 0;
 }}
 
