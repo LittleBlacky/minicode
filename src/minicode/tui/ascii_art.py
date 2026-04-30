@@ -154,13 +154,13 @@ class CatAnimator:
     def get_art(self) -> str:
         """Get current ASCII art based on state."""
         if self.state == "sleeping":
-            return self.SLEEPING_CAT
+            return ASCIIArt.SLEEPING_CAT
         elif self.state == "typing":
-            return self.TYPING_CAT
+            return ASCIIArt.TYPING_CAT
         elif self.state == "happy":
-            return self.HAPPY_CAT
+            return ASCIIArt.HAPPY_CAT
         elif self.state == "thinking":
-            return self.THINKING_CAT
+            return ASCIIArt.THINKING_CAT
         else:
             return ASCIIArt.get_cat_frame(self.current_frame)
 
