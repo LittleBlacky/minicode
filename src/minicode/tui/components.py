@@ -1,27 +1,12 @@
-"""Textual TUI widgets and components."""
+"""Textual TUI widgets and components - Dark theme compatible."""
 from textual.widgets import Static, Log, RichLog
 from textual.message import Message
 
+from minicode.tui.themes.dark import dark_theme as theme
+
 
 class StatusBar(Static):
-    """Status bar widget."""
-
-    DEFAULT_CSS = """
-    StatusBar {
-        height: 1;
-        background: $surface-darken-1;
-        dock: bottom;
-        padding: 0 2;
-    }
-
-    StatusBar > .status-text {
-        color: $text-muted;
-    }
-
-    StatusBar > .status-indicator {
-        color: $success;
-    }
-    """
+    """Status bar widget with dark theme."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -53,24 +38,14 @@ class CommandPalette(Static):
 
     def render(self) -> str:
         """Render the command palette."""
-        lines = ["[bold]Commands:[/bold]"]
+        lines = ["[bold cyan]Commands:[/bold cyan]"]
         for name, desc in self.commands:
-            lines.append(f"  {name} - {desc}")
+            lines.append(f"  [cyan]{name}[/cyan] - {desc}")
         return "\n".join(lines)
 
 
 class ToolCallLog(Static):
-    """Log widget for tool calls."""
-
-    DEFAULT_CSS = """
-    ToolCallLog {
-        background: $surface-darken-2;
-        color: $text;
-        padding: 1 2;
-        height: auto;
-        max-height: 10;
-    }
-    """
+    """Log widget for tool calls with dark theme."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -95,40 +70,19 @@ class ToolCallLog(Static):
         if not self.calls:
             return "[dim]No tool calls[/dim]"
 
-        lines = ["[bold]Tool Calls:[/bold]"]
+        lines = ["[bold cyan]Tool Calls:[/bold cyan]"]
         for call in self.calls[-5:]:  # Show last 5
             lines.append(f"  [cyan]{call['tool']}[/cyan]")
+            if call.get("result"):
+                result = call["result"]
+                if len(result) > 50:
+                    result = result[:50] + "..."
+                lines.append(f"    [dim]{result}[/dim]")
         return "\n".join(lines)
 
 
 class MessageBubble(Static):
-    """Message bubble widget."""
-
-    DEFAULT_CSS = """
-    MessageBubble {
-        width: 100%;
-        height: auto;
-        margin: 1 0;
-        padding: 1 2;
-    }
-
-    MessageBubble.user {
-        background: $primary;
-        color: $text;
-        text-style: bold;
-    }
-
-    MessageBubble.assistant {
-        background: $surface;
-        color: $text;
-        border-left: solid $primary;
-    }
-
-    MessageBubble.system {
-        background: $warning;
-        color: $text;
-    }
-    """
+    """Message bubble widget with dark theme."""
 
     def __init__(self, role: str, content: str, *args, **kwargs):
         super().__init__(content, *args, **kwargs)
@@ -137,9 +91,61 @@ class MessageBubble(Static):
 
     def render(self) -> str:
         """Render the message."""
-        prefix = {
-            "user": "You",
-            "assistant": "MiniCode",
-            "system": "System",
-        }.get(self.role, self.role)
-        return f"[bold]{prefix}:[/bold] {self.content}"
+        prefix_colors = {
+            "user": "[cyan bold]You[/cyan bold]",
+            "assistant": "[green bold]MiniCode[/green bold]",
+            "system": "[dim bold]System[/dim bold]",
+        }
+        prefix = prefix_colors.get(self.role, self.role)
+        return f"{prefix}\n{self.content}"
+
+
+class ToolItem(Static):
+    """Individual tool item widget."""
+
+    def __init__(self, name: str, status: str = "running", *args, **kwargs):
+        self.tool_name = name
+        self.status = status
+        super().__init__(*args, **kwargs)
+
+    def render(self) -> str:
+        """Render the tool item."""
+        status_icon = {
+            "running": "[yellow]◐[/yellow]",
+            "success": "[green]●[/green]",
+            "error": "[red]✗[/red]",
+        }.get(self.status, "[dim]○[/dim]")
+
+        return f"{status_icon} [cyan]{self.tool_name}[/cyan]"
+
+
+class Notification(Static):
+    """Notification toast widget."""
+
+    def __init__(self, message: str, type: str = "info", *args, **kwargs):
+        """
+        Args:
+            message: Notification message
+            type: Type of notification (info, success, warning, error)
+        """
+        self.message = message
+        self.notification_type = type
+        super().__init__(*args, **kwargs)
+
+    def render(self) -> str:
+        """Render the notification."""
+        border_colors = {
+            "info": "blue",
+            "success": "green",
+            "warning": "yellow",
+            "error": "red",
+        }
+        color = border_colors.get(self.notification_type, "blue")
+        icon = {
+            "info": "ℹ",
+            "success": "✓",
+            "warning": "⚠",
+            "error": "✗",
+        }.get(self.notification_type, "ℹ")
+
+        return f"[{color}]{icon}[/{color}] {self.message}"
