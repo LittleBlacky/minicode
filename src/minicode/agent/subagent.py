@@ -31,10 +31,7 @@ class SubAgent:
         """Run the subagent task and return summary."""
         from minicode.agent.graph import create_agent_graph
 
-        graph = create_agent_graph(
-            model_provider=self.model_provider,
-            model_name=self.model_name,
-        )
+        graph = create_agent_graph()
 
         system_prompt = f"""你是 {self.name}，角色是 {self.role}。
 完成以下任务后，只返回任务结果的简要总结：

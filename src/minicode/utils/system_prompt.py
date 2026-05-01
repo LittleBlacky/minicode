@@ -243,5 +243,5 @@ def get_system_prompt(workdir: Optional[Path] = None) -> str:
     from minicode.tools.registry import ALL_TOOLS
 
     builder = SystemPromptBuilder(workdir=workdir)
-    model_id = os.environ.get("MODEL_NAME", "claude")
+    model_id = os.environ.get("MINICODE_MODEL", "claude")
     return builder.build(tools=ALL_TOOLS, model_id=model_id)
