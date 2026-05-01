@@ -12,8 +12,8 @@ HOOK_EVENTS = ("PreToolUse", "PostToolUse", "SessionStart")
 HOOK_TIMEOUT = 30
 
 STORAGE_DIR = Path.cwd() / ".minicode"
-HOOK_CONFIG_PATH = STORAGE_DIR / ".hooks.json"
-TRUST_MARKER = STORAGE_DIR / ".trusted"
+HOOK_CONFIG_PATH = STORAGE_DIR / "hooks.json"
+TRUST_MARKER = STORAGE_DIR / "trusted"
 
 
 class HookManager:

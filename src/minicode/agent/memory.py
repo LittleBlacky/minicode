@@ -18,7 +18,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 
 WORKDIR = Path.cwd()
-MEMORY_DIR = WORKDIR / ".minicode" / ".memory"
+MEMORY_DIR = WORKDIR / ".minicode" / "memory"
 STATIC_DIR = MEMORY_DIR / "static"
 SESSION_DIR = MEMORY_DIR / "session"
 

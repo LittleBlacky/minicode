@@ -11,7 +11,7 @@ class MemoryManager:
     """Manage persistent memories."""
 
     def __init__(self, memory_dir: Optional[Path] = None):
-        self.memory_dir = memory_dir or Path.cwd() / ".minicode" / ".memory"
+        self.memory_dir = memory_dir or Path.cwd() / ".minicode" / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.index_file = self.memory_dir / "MEMORY.md"
 
