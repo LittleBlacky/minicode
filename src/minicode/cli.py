@@ -27,8 +27,8 @@ Tips:
         """,
     )
     parser.add_argument("task", nargs="?", help="Task to execute")
-    parser.add_argument("--model", "-m", default="claude-sonnet-4-7", help="Model name (default: claude-sonnet-4-7)")
-    parser.add_argument("--provider", "-p", default="anthropic", help="Model provider (default: anthropic)")
+    parser.add_argument("--model", "-m", default=None, help="Model name")
+    parser.add_argument("--provider", "-p", default=None, help="Model provider")
     parser.add_argument("--workdir", "-w", type=Path, help="Working directory")
     parser.add_argument("--session", "-s", default="default", help="Session ID")
     parser.add_argument("--no-checkpoint", action="store_true", help="Disable checkpoint")
@@ -54,14 +54,19 @@ async def run_task(runner: AgentRunner, task: str) -> None:
 
 
 def main():
+    import os
     args = parse_args()
+
+    # 只有明确传入参数时才设置环境变量，否则让 create_chat_model 从 config.json 读取
+    if args.provider is not None:
+        os.environ["MINICODE_PROVIDER"] = args.provider
+    if args.model is not None:
+        os.environ["MINICODE_MODEL"] = args.model
 
     # Always start with TUI mode
     print("Starting MiniCode TUI...")
     from minicode.tui.app import run_tui
     runner = AgentRunner(
-        model_provider=args.provider,
-        model_name=args.model,
         use_checkpoint=not args.no_checkpoint,
         workdir=args.workdir,
         thread_id=args.session,

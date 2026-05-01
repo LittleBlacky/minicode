@@ -162,18 +162,14 @@ bash_validator = BashSecurityValidator()
 
 
 class AgentGraphBuilder:
-    """构建 Agent Graph 的 Builder"""
+    """构建 Agent Graph 的 Builder - 所有配置从环境变量读取"""
     _instance: Optional["AgentGraphBuilder"] = None
 
-    def __init__(
-        self,
-        model_provider: str = "anthropic",
-        model_name: str = "claude-sonnet-4-7",
-    ):
-        self.model_provider = model_provider
-        self.model_name = model_name
+    def __init__(self):
         self._model = None
         self._model_with_tools = None
+        # 设置单例
+        AgentGraphBuilder._instance = self
 
     @classmethod
     def get_instance(cls) -> "AgentGraphBuilder":
@@ -182,10 +178,8 @@ class AgentGraphBuilder:
     @property
     def model(self):
         if self._model is None:
-            self._model = create_provider(
-                provider=self.model_provider,
-                model=self.model_name,
-            ).client
+            # create_provider() 直接返回 chat model，不需要 .client
+            self._model = create_provider()
         return self._model
 
     @property
@@ -233,18 +227,26 @@ def call_model(state: AgentState) -> dict:
     if not messages:
         return {"messages": []}
 
+    # DEBUG: 写入文件确认函数被调用
+    import pathlib, os
+    debug_log = "C:/temp/minicode_debug.log"
+    pathlib.Path("C:/temp").mkdir(parents=True, exist_ok=True)
+    with open(debug_log, "a", encoding="utf-8") as f:
+        f.write(f"\n=== call_model called ===\n")
+        f.write(f"env MINICODE_API_KEY={'***' + os.environ.get('MINICODE_API_KEY', 'NONE')[-10:]}\n")
+        f.write(f"builder instance: {AgentGraphBuilder.get_instance()}\n")
+
     # 构建系统提示 - 传入 state 以便注入记忆
     system_msg = SystemMessage(content=_build_system_message(state))
     messages_with_system = [system_msg] + list(messages)
 
-    # 获取环境变量中的模型配置
-    provider = os.environ.get("MODEL_PROVIDER", "anthropic")
-    name = os.environ.get("MODEL_NAME", "claude-sonnet-4-7")
-
+    # 使用 builder 中的模型配置（从 create_agent_graph 传入）
     builder = AgentGraphBuilder.get_instance()
-    if not builder or builder.model_provider != provider:
-        builder = AgentGraphBuilder(provider, name)
+    if not builder:
+        builder = AgentGraphBuilder()
+        AgentGraphBuilder._instance = builder
 
+    # 使用同步 invoke（ToolNode 会处理工具调用）
     response = builder.model_with_tools.invoke(messages_with_system)
     return {"messages": [response]}
 
@@ -356,12 +358,10 @@ def should_continue(state: AgentState) -> Literal["tools", END]:
 
 
 def create_agent_graph(
-    model_provider: str = "anthropic",
-    model_name: str = "claude-sonnet-4-7",
     use_checkpoint: bool = False,
 ):
-    """创建轻量级 Agent Graph"""
-    builder = AgentGraphBuilder(model_provider, model_name)
+    """创建轻量级 Agent Graph - 所有配置由 create_chat_model 内部从环境变量读取"""
+    builder = AgentGraphBuilder()
     AgentGraphBuilder._instance = builder
 
     # 初始化时刷新 MCP 工具
