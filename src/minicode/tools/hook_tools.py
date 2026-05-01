@@ -22,7 +22,11 @@ class HookManager:
     Hooks are extension points around the main loop that let you add behavior
     without rewriting the graph nodes themselves.
 
-    Exit-code contract:
+    Supports two types of hooks:
+    - subprocess hooks: execute external commands (loaded from .hooks.json)
+    - python hooks: execute Python functions directly (registered at runtime)
+
+    Exit-code contract (for subprocess hooks):
     - 0: Continue execution
     - 1: Block the operation
     - 2: Inject additional context
@@ -48,6 +52,7 @@ class HookManager:
 
     def __init__(self, config_path: Optional[Path] = None, sdk_mode: bool = False):
         self.hooks = {event: [] for event in HOOK_EVENTS}
+        self._python_hooks = {event: [] for event in HOOK_EVENTS}
         self._sdk_mode = sdk_mode
         self.config_path = config_path or HOOK_CONFIG_PATH
         self._load_hooks()
@@ -199,18 +204,99 @@ class HookManager:
 
         return result
 
+    def register_python_hook(
+        self,
+        event: str,
+        handler: callable,
+        matcher: Optional[str] = None,
+    ) -> None:
+        """Register a Python function as a hook.
+
+        Args:
+            event: One of PreToolUse, PostToolUse, SessionStart
+            handler: Callable that takes (context: dict) and returns dict:
+                {"blocked": bool, "block_reason": str, "messages": list}
+            matcher: Optional tool name filter (e.g., "bash_tool")
+        """
+        if event not in self._python_hooks:
+            return
+        self._python_hooks[event].append({
+            "handler": handler,
+            "matcher": matcher,
+        })
+
+    def run_python_hooks(
+        self,
+        event: str,
+        context: Optional[dict] = None,
+    ) -> dict:
+        """Execute Python hooks for an event."""
+        result = {
+            "blocked": False,
+            "block_reason": "",
+            "messages": [],
+            "updated_input": None,
+        }
+
+        if not self._check_workspace_trust():
+            return result
+
+        for hook_def in self._python_hooks.get(event, []):
+            handler = hook_def["handler"]
+            matcher = hook_def.get("matcher")
+
+            # Match check
+            if matcher and matcher != "*":
+                if context and matcher != context.get("tool_name", ""):
+                    continue
+
+            try:
+                hook_result = handler(context or {})
+                if isinstance(hook_result, dict):
+                    if hook_result.get("blocked"):
+                        result["blocked"] = True
+                        result["block_reason"] = hook_result.get("block_reason", "Blocked")
+                        break
+                    if hook_result.get("messages"):
+                        result["messages"].extend(hook_result["messages"])
+                    if hook_result.get("updated_input"):
+                        result["updated_input"] = hook_result["updated_input"]
+                elif isinstance(hook_result, bool):
+                    # Simple bool return: True = blocked
+                    if hook_result:
+                        result["blocked"] = True
+                        result["block_reason"] = "Blocked by hook"
+                        break
+            except Exception as e:
+                print(f"  [python_hook:{event}] Error: {e}")
+
+        return result
+
     def add_hook(self, event: str, hook_def: dict) -> None:
         """Add a hook at runtime."""
         if event in self.hooks:
             self.hooks[event].append(hook_def)
 
     def list_hooks(self) -> dict:
-        """List all registered hooks."""
-        return dict(self.hooks)
+        """List all registered hooks (both subprocess and python)."""
+        result = {}
+        for event in HOOK_EVENTS:
+            all_hooks = list(self.hooks.get(event, []))
+            for ph in self._python_hooks.get(event, []):
+                handler = ph["handler"]
+                name = getattr(handler, "__name__", repr(handler))
+                all_hooks.append({
+                    "matcher": ph.get("matcher", "*"),
+                    "type": "python",
+                    "handler": name,
+                })
+            result[event] = all_hooks
+        return result
 
     def reload(self) -> None:
         """Reload hooks from configuration file."""
         self.hooks = {event: [] for event in HOOK_EVENTS}
+        self._python_hooks = {event: [] for event in HOOK_EVENTS}
         self._load_hooks()
 
 

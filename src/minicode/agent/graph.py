@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Literal, Optional
 
 from langchain_core.messages import (
     SystemMessage,
@@ -16,10 +15,11 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
 from minicode.agent.state import AgentState
+from minicode.tools.hook_tools import get_hook_manager
+from minicode.tools.permission_hook import register_permission_hooks
 from minicode.tools.registry import ALL_TOOLS
 from minicode.services.model_provider import create_provider
 from minicode.utils.system_prompt import get_system_prompt
-from minicode.tools.permission_tools import check_permission
 
 try:
     from minicode.agent.memory import get_memory_layer
@@ -32,6 +32,11 @@ WORKDIR = Path.cwd()
 
 TOOL_MAP: dict[str, BaseTool] = {t.name: t for t in ALL_TOOLS}
 TOOL_NODE = ToolNode(ALL_TOOLS, handle_tool_errors=True)
+
+
+def _init_hooks() -> None:
+    """Initialize hooks system."""
+    register_permission_hooks()
 
 
 def refresh_mcp_tools() -> int:
@@ -107,27 +112,6 @@ def reset_for_mcp_refresh():
     builder = AgentGraphBuilder.get_instance()
     if builder:
         builder.reset()
-
-
-class BashSecurityValidator:
-    """Bash command security validation."""
-    VALIDATORS = [
-        ("shell_metachar", r"[;&|`$]"),
-        ("sudo", r"\bsudo\b"),
-        ("rm_rf", r"\brm\s+(-[a-zA-Z]*)?r"),
-        ("cmd_substitution", r"\$\("),
-        ("ifs_injection", r"\bIFS\s*="),
-    ]
-
-    def validate(self, command: str) -> list[tuple[str, str]]:
-        failures = []
-        for name, pattern in self.VALIDATORS:
-            if re.search(pattern, command):
-                failures.append((name, pattern))
-        return failures
-
-
-bash_validator = BashSecurityValidator()
 
 
 class AgentGraphBuilder:
@@ -210,50 +194,70 @@ def execute_tools(state: AgentState) -> dict:
         return {"messages": [], "tool_messages": []}
 
     tool_calls = last_message.tool_calls
+    hook_manager = get_hook_manager()
 
-    # Check permissions for bash_tool
+    # PreToolUse: run hooks before execution
+    blocked_tool_calls = []
     for tc in tool_calls:
-        if tc["name"] == "bash_tool":
-            command = tc.get("args", {}).get("command", "")
-            allowed, reason = check_permission(command, "bash_tool")
-            if not allowed:
-                tc["args"]["_permission_denied"] = reason
+        tool_name = tc.get("name", "")
+        tool_input = tc.get("args", {}) or {}
+        context = {"tool_name": tool_name, "tool_input": tool_input}
 
-    try:
-        from langgraph._internal._constants import CONF, CONFIG_KEY_RUNTIME
-        from langgraph.runtime import DEFAULT_RUNTIME
+        # Run Python hooks first
+        hook_result = hook_manager.run_python_hooks("PreToolUse", context)
 
-        runtime_config = {
-            CONF: {
-                CONFIG_KEY_RUNTIME: DEFAULT_RUNTIME
+        if hook_result.get("blocked"):
+            blocked_tool_calls.append({
+                "id": tc.get("id", ""),
+                "name": tool_name,
+                "reason": hook_result.get("block_reason", "Blocked by hook"),
+            })
+        elif hook_result.get("updated_input"):
+            # Update tool input if hook modified it
+            tc["args"] = hook_result["updated_input"]
+
+    # Build result
+    tool_messages = []
+
+    # Add blocked messages
+    for blocked in blocked_tool_calls:
+        tool_messages.append(
+            ToolMessage(
+                content=f"[Permission Denied]: {blocked['reason']}",
+                tool_call_id=blocked["id"]
+            )
+        )
+
+    # Execute allowed tools
+    allowed_tool_calls = [
+        tc for tc in tool_calls
+        if tc.get("id", "") not in [b["id"] for b in blocked_tool_calls]
+    ]
+
+    if allowed_tool_calls:
+        try:
+            from langgraph._internal._constants import CONF, CONFIG_KEY_RUNTIME
+            from langgraph.runtime import DEFAULT_RUNTIME
+
+            runtime_config = {
+                CONF: {
+                    CONFIG_KEY_RUNTIME: DEFAULT_RUNTIME
+                }
             }
-        }
-        result = TOOL_NODE.invoke({"messages": [last_message]}, runtime_config)
-    except Exception as e:
-        # Return error as tool message
-        error_msg = f"[Tool Execution Error] {type(e).__name__}: {e}"
-        tool_messages = [
-            ToolMessage(content=error_msg, tool_call_id=tc.get("id", ""))
-            for tc in tool_calls
-        ]
-        return {"messages": tool_messages, "tool_messages": tool_messages}
 
-    # Post-process results to add permission denied messages
-    all_messages = result.get("messages", [])
-    tool_messages = [m for m in all_messages if hasattr(m, "tool_call_id")]
+            # Create a modified message with only allowed tool calls
+            allowed_message = last_message.model_copy()
+            allowed_message.tool_calls = allowed_tool_calls
 
-    for tc in tool_calls:
-        if tc["name"] == "bash_tool" and "_permission_denied" in tc.get("args", {}):
-            # Find corresponding tool message or create one
-            tc_id = tc.get("id", "")
-            reason = tc["args"]["_permission_denied"]
-
-            # Check if we already got a result for this call
-            existing = [tm for tm in tool_messages if tm.tool_call_id == tc_id]
-            if not existing:
-                tool_messages.append(
-                    ToolMessage(content=f"[Permission Denied]: {reason}", tool_call_id=tc_id)
-                )
+            result = TOOL_NODE.invoke({"messages": [allowed_message]}, runtime_config)
+            all_messages = result.get("messages", [])
+            tool_messages.extend([m for m in all_messages if hasattr(m, "tool_call_id")])
+        except Exception as e:
+            error_msg = f"[Tool Execution Error] {type(e).__name__}: {e}"
+            tool_messages.extend([
+                ToolMessage(content=error_msg, tool_call_id=tc.get("id", ""))
+                for tc in allowed_tool_calls
+            ])
 
     return {"messages": tool_messages, "tool_messages": tool_messages}
 
@@ -277,6 +281,7 @@ def create_agent_graph(
     builder = AgentGraphBuilder()
     AgentGraphBuilder._instance = builder
 
+    _init_hooks()  # Initialize hooks (permission checks, etc.)
     refresh_mcp_tools()
 
     workflow = StateGraph(AgentState)
