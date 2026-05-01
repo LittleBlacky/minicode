@@ -1,6 +1,5 @@
 """Config service for managing settings."""
 import json
-import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -40,15 +39,26 @@ class ConfigManager:
         }
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Get config value by dot-notation key."""
+        """Get config value by dot-notation key.
+
+        直接从 config.json 读取，不回退到环境变量。
+        环境变量回退由调用方在需要时自行处理。
+        """
         keys = key.split(".")
         value = self._config
         for k in keys:
             if isinstance(value, dict):
                 value = value.get(k)
             else:
-                return default
+                value = None
+            if value is None:
+                break
+
         return value if value is not None else default
+
+    def _get_from_env(self, key: str) -> Optional[Any]:
+        """已废弃 - 仅保留签名兼容，内部不再使用"""
+        return None
 
     def set(self, key: str, value: Any) -> None:
         """Set config value by dot-notation key."""
