@@ -54,6 +54,7 @@ class MiniCodeTUI(App):
         Binding("f2", "show_status", "Status", show=True),
         Binding("f3", "show_history", "History", show=True),
         Binding("f4", "show_session", "Session", show=True),
+        Binding("f5", "show_config", "Config", show=True),
     ]
 
     def __init__(self, runner: AgentRunner, **kwargs):
@@ -100,7 +101,7 @@ class MiniCodeTUI(App):
             yield Static("MiniCode", id="status-left")
             yield Static("", id="status-center")
             yield Static(
-                "Ctrl+K: 命令  |  Ctrl+L: 清屏  |  Ctrl+A: 工具",
+                "F5:配置  |  Ctrl+K: 命令  |  Ctrl+L: 清屏",
                 id="status-right",
             )
 
@@ -209,11 +210,28 @@ class MiniCodeTUI(App):
         log = self.query_one("#message-log", RichLog)
         self._cmd_session(log, "")
 
+    def action_show_config(self) -> None:
+        """Show interactive config dialog."""
+        from minicode.tui.dialogs import ConfigDialog
+        dialog = ConfigDialog()
+        self.mount(dialog)
+
     def action_suspend(self) -> None:
         """Suspend execution."""
         pass  # TODO: Implement
 
     # ============ Event Handlers ============
+
+    def on_config_saved(self, event) -> None:
+        """Handle config saved event - trigger hot reload."""
+        from minicode.tui.dialogs import ConfigSaved
+        if isinstance(event, ConfigSaved):
+            # 显示重载提示
+            log = self.query_one("#message-log", RichLog)
+            log.write(f"[green]Config saved! Reloading model...[/green]")
+            # 触发热重载
+            self.runner.reload_config()
+            log.write(f"[green]Model reloaded: {event.config['provider']}/{event.config['model']}[/green]")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission."""
@@ -377,8 +395,7 @@ class MiniCodeTUI(App):
 [cyan]/stat[/cyan]           Statistics
 
 [bold]Model:[/bold]
-[cyan]/model[/cyan] <name>   Change model
-[cyan]/provider[/cyan] <p>   Change provider
+[cyan]/config[/cyan]          Unified config (show|provider|model|apikey|baseurl)
 [cyan]/theme[/cyan]          Change theme
 
 [bold]Tools:[/bold]
@@ -453,18 +470,6 @@ class MiniCodeTUI(App):
         log.write(f"  Messages: {len(self.messages)}")
         log.write(f"  Commands: {len(self.history)}")
         log.write(f"  Uptime: {uptime}")
-
-    async def _cmd_config(self, log: RichLog, args: str) -> None:
-        """Show config."""
-        try:
-            from minicode.services.config import get_config_manager
-            config = get_config_manager()
-            log.write("[bold cyan]Configuration:[/bold cyan]")
-            log.write(f"  Model Provider: {config.get('model.provider')}")
-            log.write(f"  Model: {config.get('model.model')}")
-            log.write(f"  Permission Mode: {config.get('permissions.mode')}")
-        except Exception as e:
-            log.write(f"[dim]Config not available: {e}[/dim]")
 
     async def _cmd_session(self, log: RichLog, args: str) -> None:
         """Show session."""
@@ -571,6 +576,69 @@ class MiniCodeTUI(App):
             log.write("[yellow]Invalid provider[/yellow]")
             log.write("[dim]Available providers: anthropic, openai[/dim]")
 
+    async def _cmd_config(self, log: RichLog, args: str) -> None:
+        """Unified config command - opens dialog or shows text output."""
+        import os
+        from minicode.services.config import get_config_manager
+
+        parts = args.split()
+        action = parts[0].lower() if parts else "interactive"
+
+        config = get_config_manager()
+
+        if action == "interactive" or action == "show" or not args:
+            # Launch interactive dialog
+            from minicode.tui.dialogs import ConfigDialog
+            dialog = ConfigDialog()
+            self.mount(dialog)
+            return
+
+        if action == "provider":
+            if len(parts) < 2:
+                log.write("[yellow]Usage: /config provider <anthropic|openai>[/yellow]")
+                return
+            provider = parts[1].lower()
+            if provider not in ("anthropic", "openai"):
+                log.write("[yellow]Invalid provider. Use: anthropic, openai[/yellow]")
+                return
+            config.set("model.provider", provider)
+            log.write(f"[green]Provider changed to: {provider}[/green]")
+            return
+
+        if action == "model":
+            if len(parts) < 2:
+                log.write("[yellow]Usage: /config model <model-name>[/yellow]")
+                return
+            model = parts[1]
+            config.set("model.model", model)
+            log.write(f"[green]Model changed to: {model}[/green]")
+            return
+
+        if action == "apikey":
+            if len(parts) < 2:
+                log.write("[yellow]Usage: /config apikey <key>[/yellow]")
+                log.write("[dim]Example: /config apikey sk-xxxx[/dim]")
+                return
+            key = parts[1]
+            os.environ["MINICODE_API_KEY"] = key
+            log.write(f"[green]MINICODE_API_KEY set (in memory)[/green]")
+            log.write("[dim]Note: This only affects current session. Restart to persist.[/dim]")
+            return
+
+        if action == "baseurl":
+            if len(parts) < 2:
+                log.write("[yellow]Usage: /config baseurl <url>[/yellow]")
+                log.write("[dim]Example: /config baseurl https://api.anthropic.com[/dim]")
+                return
+            url = parts[1]
+            os.environ["MINICODE_BASE_URL"] = url
+            log.write(f"[green]MINICODE_BASE_URL set to: {url}[/green]")
+            log.write("[dim]Note: This only affects current session. Restart to persist.[/dim]")
+            return
+
+        log.write(f"[yellow]Unknown action: {action}[/yellow]")
+        log.write("[dim]Usage: /config show|provider|model|apikey|baseurl[/dim]")
+
     async def _cmd_theme(self, log: RichLog, args: str) -> None:
         """Change theme."""
         log.write("[dim]Theme change not yet implemented[/dim]")
@@ -597,11 +665,11 @@ class MiniCodeTUI(App):
     async def _cmd_keys(self, log: RichLog, args: str) -> None:
         """Show API keys status."""
         import os
-        has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
-        has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-        log.write("[bold cyan]API Keys:[/bold cyan]")
-        log.write(f"  ANTHROPIC_API_KEY: {'[green]Set[/green]' if has_anthropic else '[red]Not set[/red]'}")
-        log.write(f"  OPENAI_API_KEY: {'[green]Set[/green]' if has_openai else '[red]Not set[/red]'}")
+        has_key = bool(os.environ.get("MINICODE_API_KEY"))
+        has_url = bool(os.environ.get("MINICODE_BASE_URL"))
+        log.write("[bold cyan]MiniCode API Settings:[/bold cyan]")
+        log.write(f"  MINICODE_API_KEY: {'[green]Set[/green]' if has_key else '[red]Not set[/red]'}")
+        log.write(f"  MINICODE_BASE_URL: {'[green]Set[/green]' if has_url else '[red]Not set[/red]'}")
 
     async def _cmd_export(self, log: RichLog, args: str) -> None:
         """Export session."""
