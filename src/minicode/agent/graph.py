@@ -218,40 +218,32 @@ def execute_tools(state: AgentState) -> dict:
 
     tool_calls = last_message.tool_calls
 
-    # Separate permission-denied calls from normal calls
-    permission_denied = []
-    allowed_calls = []
-
+    # Check permissions for bash_tool
     for tc in tool_calls:
         if tc["name"] == "bash_tool":
             command = tc.get("args", {}).get("command", "")
             allowed, reason = check_permission(command, "bash_tool")
             if not allowed:
-                permission_denied.append((tc, reason))
-            else:
-                allowed_calls.append(tc)
-        else:
-            allowed_calls.append(tc)
+                tc["args"]["_permission_denied"] = reason
 
-    tool_messages = []
+    # Use ToolNode to handle all tools (async/sync)
+    result = TOOL_NODE.invoke({"messages": [last_message]})
 
-    # Add permission denied messages
-    for tc, reason in permission_denied:
-        tool_messages.append(
-            ToolMessage(content=f"[Permission Denied]: {reason}", tool_call_id=tc.get("id", ""))
-        )
+    # Post-process results to add permission denied messages
+    tool_messages = result.get("tool_messages", [])
 
-    # Execute allowed tools using ToolNode
-    if allowed_calls:
-        # Create a modified message with only allowed tool calls
-        from langchain_core.messages import AIMessage
-        modified_message = AIMessage(
-            content=last_message.content,
-            tool_calls=allowed_calls,
-            id=getattr(last_message, "id", None),
-        )
-        result = TOOL_NODE.invoke({"messages": [modified_message]})
-        tool_messages.extend(result.get("tool_messages", []))
+    for tc in tool_calls:
+        if tc["name"] == "bash_tool" and "_permission_denied" in tc.get("args", {}):
+            # Find corresponding tool message or create one
+            tc_id = tc.get("id", "")
+            reason = tc["args"]["_permission_denied"]
+
+            # Check if we already got a result for this call
+            existing = [tm for tm in tool_messages if tm.tool_call_id == tc_id]
+            if not existing:
+                tool_messages.append(
+                    ToolMessage(content=f"[Permission Denied]: {reason}", tool_call_id=tc_id)
+                )
 
     return {"messages": tool_messages, "tool_messages": tool_messages}
 
