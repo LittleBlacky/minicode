@@ -80,15 +80,15 @@ class ConfigDialog(Widget):
 
     def _load_config(self) -> None:
         """Load current configuration."""
-        import os
         from minicode.services.config import get_config_manager
 
         try:
             config = get_config_manager()
-            self.provider = config.get("model.provider", "anthropic")
-            self.model = config.get("model.model", "claude-sonnet-4-7")
-            self.api_key = os.environ.get("MINICODE_API_KEY", "")
-            self.base_url = os.environ.get("MINICODE_BASE_URL", "")
+            model_cfg = config.get_model_config()
+            self.provider = model_cfg.get("provider", "anthropic")
+            self.model = model_cfg.get("model", "claude-sonnet-4-7")
+            self.api_key = model_cfg.get("api_key") or ""
+            self.base_url = model_cfg.get("base_url") or ""
         except Exception:
             pass
 

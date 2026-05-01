@@ -664,12 +664,15 @@ class MiniCodeTUI(App):
 
     async def _cmd_keys(self, log: RichLog, args: str) -> None:
         """Show API keys status."""
-        import os
-        has_key = bool(os.environ.get("MINICODE_API_KEY"))
-        has_url = bool(os.environ.get("MINICODE_BASE_URL"))
+        from minicode.services.config import get_config_manager
+        config = get_config_manager()
+        model_cfg = config.get_model_config()
+
         log.write("[bold cyan]MiniCode API Settings:[/bold cyan]")
-        log.write(f"  MINICODE_API_KEY: {'[green]Set[/green]' if has_key else '[red]Not set[/red]'}")
-        log.write(f"  MINICODE_BASE_URL: {'[green]Set[/green]' if has_url else '[red]Not set[/red]'}")
+        log.write(f"  Provider: {model_cfg.get('provider', 'unknown')}")
+        log.write(f"  Model: {model_cfg.get('model', 'unknown')}")
+        log.write(f"  API Key: {'[green]Set[/green]' if model_cfg.get('api_key') else '[red]Not set[/red]'}")
+        log.write(f"  Base URL: {'[green]Set[/green]' if model_cfg.get('base_url') else '[red]Not set[/red]'}")
 
     async def _cmd_export(self, log: RichLog, args: str) -> None:
         """Export session."""

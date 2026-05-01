@@ -27,6 +27,7 @@ from minicode.agent.self_improve import (
     reset_self_improvement,
 )
 from minicode.services.checkpoint import CheckpointManager
+from minicode.services.config import get_config_manager
 from minicode.tools.hook_tools import get_hook_manager
 
 
@@ -54,14 +55,11 @@ class AgentRunner:
         session_config: Optional[SessionConfig] = None,
         thread_id: str = "default",
     ):
-        import os
-        self.use_checkpoint = use_checkpoint
-        self.db_path = db_path
-        self.workdir = workdir or Path.cwd()
-        self.thread_id = thread_id
+        config = get_config_manager()
+        model_cfg = config.get_model_config()
 
-        self.model_provider = os.environ.get("MINICODE_PROVIDER") or os.environ.get("MINICODE_MODEL_PROVIDER") or "anthropic"
-        self.model_name = os.environ.get("MINICODE_MODEL") or "claude-sonnet-4-7"
+        self.model_provider = model_cfg.get("provider", "anthropic")
+        self.model_name = model_cfg.get("model", "claude-sonnet-4-7")
 
         self.memory = get_memory_layer(thread_id)
         self.self_improve = get_self_improvement()
@@ -280,7 +278,6 @@ class AgentRunner:
 
 async def run_interactive(thread_id: str = "default") -> None:
     """Interactive REPL mode."""
-    import os
     reset_session_manager()
     reset_memory_layer()
     reset_self_improvement()
@@ -290,9 +287,8 @@ async def run_interactive(thread_id: str = "default") -> None:
         thread_id=thread_id,
     )
 
-    model_name = os.environ.get("MINICODE_MODEL") or "claude-sonnet-4-7"
     print(f"MiniCode Agent (5 Layers)")
-    print(f"Model: {model_name}")
+    print(f"Model: {runner.model_name}")
     print("Commands: /clear, /stats, /dream, /memory, /quit")
     print("-" * 50)
 

@@ -1,6 +1,5 @@
 """Dynamic system prompt builder."""
 import datetime
-import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -241,7 +240,11 @@ def get_system_prompt(workdir: Optional[Path] = None) -> str:
         Complete system prompt string
     """
     from minicode.tools.registry import ALL_TOOLS
+    from minicode.services.config import get_config_manager
+
+    config = get_config_manager()
+    model_cfg = config.get_model_config()
+    model_id = model_cfg.get("model", "claude")
 
     builder = SystemPromptBuilder(workdir=workdir)
-    model_id = os.environ.get("MINICODE_MODEL", "claude")
     return builder.build(tools=ALL_TOOLS, model_id=model_id)
