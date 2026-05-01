@@ -208,6 +208,40 @@ def clear_session_patterns() -> str:
     return f"Cleared {count} session pattern(s)"
 
 
+@tool
+def add_permanent_deny(command: str) -> str:
+    """Add command to permanent deny list (选项 d).
+
+    Extracts the command type and permanently blocks all variants.
+    Persists to .minicode/permissions.yaml.
+
+    Example:
+        add_permanent_deny("rm -rf /home/user") -> adds "rm -rf" to permanent deny
+    """
+    config = get_permission_config()
+    pattern = config.add_permanent_deny(command)
+    return f"Added to permanent deny: {pattern}"
+
+
+@tool
+def list_permanent_deny() -> str:
+    """List all permanent deny patterns (选项 d)."""
+    config = get_permission_config()
+    patterns = config.get_permanent_deny_patterns()
+    if not patterns:
+        return "No permanent deny patterns"
+    return "Permanent deny patterns:\n" + "\n".join(f"- {p}" for p in patterns)
+
+
+@tool
+def remove_permanent_deny(pattern: str) -> str:
+    """Remove a pattern from permanent deny list."""
+    config = get_permission_config()
+    if config.remove_permanent_deny(pattern):
+        return f"Removed from permanent deny: {pattern}"
+    return f"Pattern not found: {pattern}"
+
+
 def needs_prompt(command: str) -> bool:
     """Check if a command needs to prompt user for confirmation.
 
@@ -264,4 +298,7 @@ PERMISSION_TOOLS = [
     add_session_allow,
     list_session_patterns,
     clear_session_patterns,
+    add_permanent_deny,
+    list_permanent_deny,
+    remove_permanent_deny,
 ]

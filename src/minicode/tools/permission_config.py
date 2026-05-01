@@ -31,9 +31,10 @@ class PermissionConfig:
     Check order:
     0. Session allowed patterns (from [a] option, in-memory only)
     1. Built-in dangerous patterns (always blocked, cannot be overridden)
-    2. User deny patterns (block even if allowed by allow rules)
-    3. User allow patterns (explicitly permitted commands)
-    4. Default: allow
+    2. Permanent deny patterns (选项 d, persisted to YAML)
+    3. User deny patterns (block even if allowed by allow rules)
+    4. User allow patterns (explicitly permitted commands)
+    5. Default: allow
 
     Pattern formats:
     - Glob: "rm -rf /tmp/*"
@@ -50,6 +51,7 @@ class PermissionConfig:
         self._config: dict = {}
         self._allow_patterns: list[tuple[str, str, re.Pattern]] = []
         self._deny_patterns: list[tuple[str, str, re.Pattern]] = []
+        self._permanent_deny_patterns: list[tuple[str, str, re.Pattern]] = []
         self._session_allowed_patterns: list[tuple[str, str, re.Pattern]] = []
         self._prompt_unknown = False
         self._prompt_risk_threshold = "medium"  # Prompt for medium+ by default
@@ -81,6 +83,12 @@ class PermissionConfig:
         """Parse allow and deny patterns."""
         self._allow_patterns = []
         self._deny_patterns = []
+        self._permanent_deny_patterns = []
+
+        # Parse permanent deny patterns (选项 d)
+        for pattern in self._config.get("permanent_deny") or []:
+            ptype, compiled = self._compile_pattern(pattern)
+            self._permanent_deny_patterns.append((pattern, ptype, compiled))
 
         # Parse allow patterns (handle None from empty/commented YAML lists)
         for pattern in self._config.get("allow") or []:
@@ -148,19 +156,25 @@ class PermissionConfig:
             if self._match_startswith(compiled, ptype, command):
                 return True, f"[SESSION] Allowed: {pattern}", "none", [f"session:{pattern}"]
 
-        # 3. Check user deny patterns
+        # 3. Check permanent deny patterns (选项 d)
+        for pattern, ptype, compiled in self._permanent_deny_patterns:
+            if self._match(compiled, ptype, command):
+                matched_patterns.append(f"permanent_deny:{pattern}")
+                return False, f"[PERMANENT DENY] Blocked: {pattern}", "high", matched_patterns
+
+        # 4. Check user deny patterns
         for pattern, ptype, compiled in self._deny_patterns:
             if self._match(compiled, ptype, command):
                 matched_patterns.append(f"deny:{pattern}")
                 return False, f"[DENY] Blocked by permissions.yaml", "high", matched_patterns
 
-        # 4. Check user allow patterns
+        # 5. Check user allow patterns
         for pattern, ptype, compiled in self._allow_patterns:
             if self._match(compiled, ptype, command):
                 matched_patterns.append(f"allow:{pattern}")
                 return True, f"[ALLOW] Matched: {pattern}", "none", matched_patterns
 
-        # 5. Default: allow
+        # 6. Default: allow
         return True, "", "none", []
 
     def _match_startswith(self, compiled: re.Pattern, ptype: str, command: str) -> bool:
@@ -253,6 +267,62 @@ class PermissionConfig:
         """Get list of current session patterns."""
         return [p[0] for p in self._session_allowed_patterns]
 
+    def get_permanent_deny_patterns(self) -> list[str]:
+        """Get list of permanent deny patterns."""
+        return [p[0] for p in self._permanent_deny_patterns]
+
+    def add_permanent_deny(self, command: str) -> str:
+        """Add command to permanent deny list (选项 d).
+
+        Extracts command type and adds to permanent deny patterns.
+        Persists to YAML file.
+
+        Returns:
+            The pattern that was added.
+        """
+        pattern = self.extract_command_type(command)
+        ptype, compiled = self._compile_pattern(pattern)
+
+        # Check if already exists
+        if pattern not in [p[0] for p in self._permanent_deny_patterns]:
+            self._permanent_deny_patterns.append((pattern, ptype, compiled))
+            self._save_to_yaml()
+
+        return pattern
+
+    def remove_permanent_deny(self, pattern: str) -> bool:
+        """Remove a pattern from permanent deny list."""
+        original_len = len(self._permanent_deny_patterns)
+        self._permanent_deny_patterns = [
+            (p, t, c) for p, t, c in self._permanent_deny_patterns if p != pattern
+        ]
+        if len(self._permanent_deny_patterns) < original_len:
+            self._save_to_yaml()
+            return True
+        return False
+
+    def _save_to_yaml(self) -> None:
+        """Save current patterns back to YAML file."""
+        if not self.config_path:
+            return
+
+        try:
+            # Read existing config
+            existing = {}
+            if self.config_path.exists():
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    existing = yaml.safe_load(f) or {}
+
+            # Update permanent_deny list
+            existing["permanent_deny"] = [p[0] for p in self._permanent_deny_patterns]
+
+            # Write back
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(existing, f, allow_unicode=True, default_flow_style=False)
+
+        except Exception as e:
+            print(f"[Permission config save error: {e}]")
+
     def clear_session_patterns(self) -> None:
         """Clear all session patterns."""
         self._session_allowed_patterns = []
@@ -284,6 +354,7 @@ class PermissionConfig:
             "loaded": bool(self._config),
             "allow_patterns": len(self._allow_patterns),
             "deny_patterns": len(self._deny_patterns),
+            "permanent_deny_patterns": len(self._permanent_deny_patterns),
             "session_patterns": len(self._session_allowed_patterns),
             "prompt_unknown": self._prompt_unknown,
             "prompt_threshold": self._prompt_risk_threshold,

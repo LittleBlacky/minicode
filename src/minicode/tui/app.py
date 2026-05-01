@@ -834,21 +834,42 @@ class MiniCodeTUI(App):
     async def _cmd_permission(self, log: RichLog, args: str) -> None:
         """Show permission configuration and rules."""
         from minicode.tools.permission_tools import get_permission_rules
+        from minicode.tools.permission_config import get_permission_config
 
         parts = args.split()
         action = parts[0].lower() if parts else "show"
 
         rules = get_permission_rules()
-        config = rules.get("config", {})
+        config_info = rules.get("config", {})
+        config = get_permission_config()
 
         if action == "show" or action == "":
             log.write("[bold cyan]Permission Configuration:[/bold cyan]")
-            log.write(f"  Config file: {config.get('config_path', 'N/A')}")
-            log.write(f"  Loaded: {'[green]Yes[/green]' if config.get('loaded') else '[yellow]No[/yellow]'}")
-            log.write(f"  Allow patterns: {config.get('allow_patterns', 0)}")
-            log.write(f"  Deny patterns: {config.get('deny_patterns', 0)}")
-            log.write(f"  Prompt threshold: {config.get('prompt_threshold', 'medium')}")
+            log.write(f"  Config file: {config_info.get('config_path', 'N/A')}")
+            log.write(f"  Loaded: {'[green]Yes[/green]' if config_info.get('loaded') else '[yellow]No[/yellow]'}")
+            log.write(f"  Allow patterns: {config_info.get('allow_patterns', 0)}")
+            log.write(f"  Deny patterns: {config_info.get('deny_patterns', 0)}")
+            log.write(f"  Permanent deny: {config_info.get('permanent_deny_patterns', 0)}")
+            log.write(f"  Session patterns: {config_info.get('session_patterns', 0)} (选项 a)")
+            log.write(f"  Prompt threshold: {config_info.get('prompt_threshold', 'medium')}")
             log.write("")
+
+            # Show permanent deny patterns
+            perm_deny = config.get_permanent_deny_patterns()
+            if perm_deny:
+                log.write("[bold]Permanent Deny (选项 d):[/bold]")
+                for p in perm_deny:
+                    log.write(f"  [red]- {p}[/red]")
+                log.write("")
+
+            # Show session patterns
+            sess_patterns = config.get_session_patterns()
+            if sess_patterns:
+                log.write("[bold]Session Patterns (选项 a):[/bold]")
+                for p in sess_patterns:
+                    log.write(f"  [cyan]+ {p}[/cyan]")
+                log.write("")
+
             log.write("[bold]Built-in Dangerous Patterns:[/bold]")
             for p in rules.get("builtin_patterns", []):
                 risk_color = {
@@ -860,6 +881,7 @@ class MiniCodeTUI(App):
                 log.write(f"  {risk_color}[{p['risk']}][/{risk_color}] {p['name']}: {p['description']}")
             log.write("")
             log.write("[dim]Use /permission reload to reload config[/dim]")
+            log.write("[dim]Use /permission clear-session to clear session patterns[/dim]")
             return
 
         if action == "reload":
@@ -868,8 +890,13 @@ class MiniCodeTUI(App):
             log.write("[green]Permission configuration reloaded[/green]")
             return
 
+        if action == "clear-session":
+            config.clear_session_patterns()
+            log.write("[green]Session patterns cleared[/green]")
+            return
+
         log.write(f"[yellow]Unknown action: {action}[/yellow]")
-        log.write("[dim]Usage: /permission show|reload[/dim]")
+        log.write("[dim]Usage: /permission show|reload|clear-session[/dim]")
 
 
 async def run_tui(runner: AgentRunner) -> None:
