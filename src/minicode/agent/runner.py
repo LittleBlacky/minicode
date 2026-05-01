@@ -89,10 +89,31 @@ class AgentRunner:
         task_type: str = "",
     ) -> AgentState:
         """Create initial state with memory injection."""
-        state = create_initial_state(messages=messages, task_type=task_type)
-        state["static_memory"] = static_memory
-        state["session_context"] = session_context
-        state["episodic_memory"] = episodic_memory
+        state = create_initial_state(messages=messages, mode="default")
+
+        # 初始化 memory 模块
+        if static_memory or session_context or episodic_memory:
+            state["memory"] = {
+                "static_memory": static_memory,
+                "session_context": session_context,
+                "episodic_memory": episodic_memory,
+                "has_compacted": False,
+                "recent_files": [],
+                "should_update_memory": False,
+            }
+
+        # 初始化 task 模块
+        if task_type:
+            state["tasks"] = {
+                "task_items": [],
+                "pending_tasks": [],
+                "todo_items": [],
+                "rounds_since_todo_update": 0,
+                "task_type": task_type,
+                "matched_skill": None,
+                "should_create_skill": False,
+            }
+
         return state
 
     def _check_self_improve_trigger(self, task_result: Optional[dict] = None) -> None:

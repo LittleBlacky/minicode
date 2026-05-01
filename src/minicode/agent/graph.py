@@ -4,11 +4,9 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from typing import Annotated, Any, Literal, Optional
+from typing import Any, Literal, Optional
 
 from langchain_core.messages import (
-    AIMessage,
-    HumanMessage,
     SystemMessage,
     ToolMessage,
 )
@@ -17,7 +15,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
-from minicode.agent.state import AgentState, create_initial_state
+from minicode.agent.state import AgentState
 from minicode.tools.registry import ALL_TOOLS
 from minicode.services.model_provider import create_provider
 from minicode.utils.system_prompt import get_system_prompt
@@ -164,26 +162,21 @@ class AgentGraphBuilder:
         self._model_with_tools = None
 
 
-def _build_system_message(state: dict) -> str:
+def _build_system_message(state: AgentState) -> str:
     """Build system prompt with memory injection."""
     base_prompt = get_system_prompt(WORKDIR)
 
     if HAS_MEMORY_LAYER:
-        parts = [base_prompt]
-
-        static = state.get("static_memory", "")
-        if static:
-            parts.append(static)
-
-        session = state.get("session_context", "")
-        if session:
-            parts.append(session)
-
-        episodic = state.get("episodic_memory", "")
-        if episodic:
-            parts.append(episodic)
-
-        return "\n\n".join(parts)
+        memory = state.get("memory")
+        if memory:
+            parts = [base_prompt]
+            if memory.get("static_memory"):
+                parts.append(memory["static_memory"])
+            if memory.get("session_context"):
+                parts.append(memory["session_context"])
+            if memory.get("episodic_memory"):
+                parts.append(memory["episodic_memory"])
+            return "\n\n".join(parts)
 
     return base_prompt
 
@@ -226,11 +219,28 @@ def execute_tools(state: AgentState) -> dict:
             if not allowed:
                 tc["args"]["_permission_denied"] = reason
 
-    # Use ToolNode to handle all tools (async/sync)
-    result = TOOL_NODE.invoke({"messages": [last_message]})
+    try:
+        from langgraph._internal._constants import CONF, CONFIG_KEY_RUNTIME
+        from langgraph.runtime import DEFAULT_RUNTIME
+
+        runtime_config = {
+            CONF: {
+                CONFIG_KEY_RUNTIME: DEFAULT_RUNTIME
+            }
+        }
+        result = TOOL_NODE.invoke({"messages": [last_message]}, runtime_config)
+    except Exception as e:
+        # Return error as tool message
+        error_msg = f"[Tool Execution Error] {type(e).__name__}: {e}"
+        tool_messages = [
+            ToolMessage(content=error_msg, tool_call_id=tc.get("id", ""))
+            for tc in tool_calls
+        ]
+        return {"messages": tool_messages, "tool_messages": tool_messages}
 
     # Post-process results to add permission denied messages
-    tool_messages = result.get("tool_messages", [])
+    all_messages = result.get("messages", [])
+    tool_messages = [m for m in all_messages if hasattr(m, "tool_call_id")]
 
     for tc in tool_calls:
         if tc["name"] == "bash_tool" and "_permission_denied" in tc.get("args", {}):
