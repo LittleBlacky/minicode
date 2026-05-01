@@ -1,5 +1,16 @@
 """Agent module - Core agent implementation"""
-from minicode.agent.state import AgentState, TeammateState, TodoItem
+from minicode.agent.state import (
+    AgentState,
+    TeammateState,
+    TodoItem,
+    create_initial_state,
+    MessageState,
+    TaskState,
+    MemoryState,
+    TeamState,
+    ExecutionState,
+    ConfigState,
+)
 from minicode.agent.graph import create_agent_graph
 from minicode.agent.runner import AgentRunner, run_interactive
 from minicode.agent.session import (
@@ -27,6 +38,14 @@ __all__ = [
     "AgentState",
     "AgentRunner",
     "run_interactive",
+    # State types
+    "MessageState",
+    "TaskState",
+    "MemoryState",
+    "TeamState",
+    "ExecutionState",
+    "ConfigState",
+    "create_initial_state",
     # Session management
     "SessionManager",
     "SessionConfig",

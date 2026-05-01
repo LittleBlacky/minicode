@@ -1,4 +1,4 @@
-"""Main agent implementation using LangGraph - 轻量级核心循环"""
+"""LangGraph-based agent implementation."""
 from __future__ import annotations
 
 import asyncio
@@ -20,13 +20,12 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
-from minicode.agent.state import AgentState
+from minicode.agent.state import AgentState, MessageState, create_initial_state
 from minicode.tools.registry import ALL_TOOLS
 from minicode.services.model_provider import create_provider
 from minicode.utils.system_prompt import get_system_prompt
 from minicode.tools.permission_tools import bash_validator, check_permission
 
-# Import Memory Layer for system prompt injection
 try:
     from minicode.agent.memory import get_memory_layer
     HAS_MEMORY_LAYER = True
@@ -36,24 +35,15 @@ except ImportError:
 
 WORKDIR = Path.cwd()
 
-# 工具映射用于快速查找
 TOOL_MAP: dict[str, BaseTool] = {t.name: t for t in ALL_TOOLS}
 TOOL_NODE = ToolNode(ALL_TOOLS, handle_tool_errors=True)
 
-# ============ MCP 动态工具支持 ============
 _MCP_DYNAMIC_TOOLS: list[BaseTool] = []
 _MCP_TOOL_NODE: Optional[ToolNode] = None
 
 
 def refresh_mcp_tools() -> int:
-    """刷新 MCP 动态工具（从 langchain-mcp-adapters）
-
-    调用此函数会重新从已连接的 MCP 服务器获取工具，
-    并更新 TOOL_MAP 和重新创建 TOOL_NODE。
-
-    Returns:
-        获取到的工具数量
-    """
+    """Refresh dynamic MCP tools."""
     global _MCP_TOOL_NODE, TOOL_MAP, TOOL_NODE
 
     try:
@@ -62,27 +52,21 @@ def refresh_mcp_tools() -> int:
 
         client = get_mcp_client()
 
-        # 刷新 MCP 客户端的工具列表
         import asyncio
         try:
             loop = asyncio.get_running_loop()
             asyncio.create_task(client.refresh())
         except RuntimeError:
-            # No running loop, use sync fallback
             pass
 
-        # 直接从客户端获取 MCP 工具
         new_tools = client.get_tools()
 
         if new_tools:
-            # 获取本地工具名称列表
             local_tool_names = {t.name for t in ALL_TOOLS}
 
-            # 处理冲突的 MCP 工具，重命名为 mcp_xxx
             processed_mcp_tools = []
             for t in new_tools:
                 if t.name in local_tool_names:
-                    # 创建重命名版本
                     new_tool = StructuredTool(
                         name=f"mcp_{t.name}",
                         description=t.description,
@@ -96,15 +80,11 @@ def refresh_mcp_tools() -> int:
             renamed_count = len([t for t in processed_mcp_tools if t.name.startswith("mcp_")])
             print(f"[MCP] Added {len(processed_mcp_tools)} tools ({renamed_count} renamed)")
 
-            # 更新全局工具映射
             TOOL_MAP = {t.name: t for t in ALL_TOOLS}
             for t in processed_mcp_tools:
                 TOOL_MAP[t.name] = t
 
-            # 重新创建工具节点（包含 MCP 工具）
             TOOL_NODE = ToolNode(ALL_TOOLS + processed_mcp_tools, handle_tool_errors=True)
-
-            # 重置模型以包含新工具
             reset_for_mcp_refresh()
 
             return len(processed_mcp_tools)
@@ -117,8 +97,7 @@ def refresh_mcp_tools() -> int:
 
 
 def get_all_tools() -> list[BaseTool]:
-    """获取所有可用工具（包括 MCP 动态工具）"""
-    # 直接从 MCP 客户端获取工具列表，避免全局变量导入问题
+    """Get all available tools including MCP dynamic tools."""
     try:
         from minicode.tools.mcp_tools import get_mcp_client
         client = get_mcp_client()
@@ -129,19 +108,18 @@ def get_all_tools() -> list[BaseTool]:
 
 
 def get_tool_map() -> dict[str, BaseTool]:
-    """获取工具映射"""
     return TOOL_MAP
 
 
 def reset_for_mcp_refresh():
-    """在刷新 MCP 工具后重置 AgentGraphBuilder"""
+    """Reset AgentGraphBuilder after MCP tool refresh."""
     builder = AgentGraphBuilder.get_instance()
     if builder:
         builder.reset()
 
 
 class BashSecurityValidator:
-    """简单的 Bash 命令安全验证"""
+    """Bash command security validation."""
     VALIDATORS = [
         ("shell_metachar", r"[;&|`$]"),
         ("sudo", r"\bsudo\b"),
@@ -162,13 +140,12 @@ bash_validator = BashSecurityValidator()
 
 
 class AgentGraphBuilder:
-    """构建 Agent Graph 的 Builder - 所有配置从环境变量读取"""
+    """Agent Graph Builder."""
     _instance: Optional["AgentGraphBuilder"] = None
 
     def __init__(self):
         self._model = None
         self._model_with_tools = None
-        # 设置单例
         AgentGraphBuilder._instance = self
 
     @classmethod
@@ -178,43 +155,40 @@ class AgentGraphBuilder:
     @property
     def model(self):
         if self._model is None:
-            # create_provider() 直接返回 chat model，不需要 .client
             self._model = create_provider()
         return self._model
 
     @property
     def model_with_tools(self):
         if self._model_with_tools is None:
-            # 绑定所有工具（包括 MCP 动态工具）
             all_tools = get_all_tools()
             self._model_with_tools = self.model.bind_tools(all_tools)
         return self._model_with_tools
 
     def reset(self):
-        """重置模型实例（用于切换模型或刷新工具时）"""
+        """Reset model instance."""
         self._model = None
         self._model_with_tools = None
 
 
-def _build_system_message(state: Optional[AgentState] = None) -> str:
-    """构建系统提示 - 支持记忆层注入"""
+def _build_system_message(state: dict) -> str:
+    """Build system prompt with memory injection."""
     base_prompt = get_system_prompt(WORKDIR)
 
-    # 如果有 AgentState，尝试注入记忆层
-    if state and HAS_MEMORY_LAYER:
+    if HAS_MEMORY_LAYER:
         parts = [base_prompt]
 
-        # 静态记忆: 用户偏好、项目配置
-        if "static_memory" in state and state["static_memory"]:
-            parts.append(state["static_memory"])
+        static = state.get("static_memory", "")
+        if static:
+            parts.append(static)
 
-        # 动态记忆: 当前会话状态
-        if "session_context" in state and state["session_context"]:
-            parts.append(state["session_context"])
+        session = state.get("session_context", "")
+        if session:
+            parts.append(session)
 
-        # 事件记忆: 相关经验
-        if "episodic_memory" in state and state["episodic_memory"]:
-            parts.append(state["episodic_memory"])
+        episodic = state.get("episodic_memory", "")
+        if episodic:
+            parts.append(episodic)
 
         return "\n\n".join(parts)
 
@@ -222,37 +196,25 @@ def _build_system_message(state: Optional[AgentState] = None) -> str:
 
 
 def call_model(state: AgentState) -> dict:
-    """调用 LLM 进行推理 - 核心节点"""
+    """LLM inference node."""
     messages = state.get("messages", [])
     if not messages:
         return {"messages": []}
 
-    # DEBUG: 写入文件确认函数被调用
-    import pathlib, os
-    debug_log = "C:/temp/minicode_debug.log"
-    pathlib.Path("C:/temp").mkdir(parents=True, exist_ok=True)
-    with open(debug_log, "a", encoding="utf-8") as f:
-        f.write(f"\n=== call_model called ===\n")
-        f.write(f"env MINICODE_API_KEY={'***' + os.environ.get('MINICODE_API_KEY', 'NONE')[-10:]}\n")
-        f.write(f"builder instance: {AgentGraphBuilder.get_instance()}\n")
-
-    # 构建系统提示 - 传入 state 以便注入记忆
     system_msg = SystemMessage(content=_build_system_message(state))
     messages_with_system = [system_msg] + list(messages)
 
-    # 使用 builder 中的模型配置（从 create_agent_graph 传入）
     builder = AgentGraphBuilder.get_instance()
     if not builder:
         builder = AgentGraphBuilder()
         AgentGraphBuilder._instance = builder
 
-    # 使用同步 invoke（ToolNode 会处理工具调用）
     response = builder.model_with_tools.invoke(messages_with_system)
     return {"messages": [response]}
 
 
 def _run_tool_async(tool, args: dict) -> Any:
-    """在线程池中运行异步工具"""
+    """Run async tool in thread pool."""
     async def _ainvoke():
         return await tool.ainvoke(args)
 
@@ -264,19 +226,16 @@ def _run_tool_async(tool, args: dict) -> Any:
 
 
 def _is_async_tool(tool: Any) -> bool:
-    """检查工具是否为异步工具（通过 coroutine 属性判断）"""
+    """Check if tool is async."""
     return hasattr(tool, 'coroutine') and tool.coroutine is not None
 
 
 def _execute_tool(tool: Any, tool_args: dict) -> Any:
-    """执行单个工具（同步或异步）"""
+    """Execute single tool."""
     try:
-        # 检查是否有 coroutine（异步工具）
         if _is_async_tool(tool):
-            # 异步工具通过 _run_tool_async 执行
             return _run_tool_async(tool, tool_args)
         else:
-            # 同步工具直接调用
             if hasattr(tool, 'invoke'):
                 return tool.invoke(tool_args)
             elif hasattr(tool, 'func'):
@@ -288,7 +247,7 @@ def _execute_tool(tool: Any, tool_args: dict) -> Any:
 
 
 def execute_tools(state: AgentState) -> dict:
-    """执行工具 - 核心节点"""
+    """Tool execution node."""
     messages = state.get("messages", [])
     if not messages:
         return {"messages": [], "tool_messages": []}
@@ -305,7 +264,6 @@ def execute_tools(state: AgentState) -> dict:
         tool_args = tc.get("args", {}) or {}
         tool_call_id = tc.get("id", "")
 
-        # Bash 权限检查
         if tool_name == "bash_tool":
             command = tool_args.get("command", "")
             allowed, reason = check_permission(command, "bash_tool")
@@ -315,7 +273,6 @@ def execute_tools(state: AgentState) -> dict:
                 )
                 continue
 
-        # 查找工具
         tool = TOOL_MAP.get(tool_name)
         if not tool:
             tool_messages.append(
@@ -324,15 +281,12 @@ def execute_tools(state: AgentState) -> dict:
             continue
 
         try:
-            # 根据工具类型选择执行方式
             result = _execute_tool(tool, tool_args)
 
-            # 处理结果
             if isinstance(result, ToolMessage):
                 result.tool_call_id = tool_call_id
                 tool_messages.append(result)
             else:
-                # 转换为 ToolMessage
                 content = str(result) if not isinstance(result, str) else result
                 tool_messages.append(
                     ToolMessage(content=content, tool_call_id=tool_call_id)
@@ -346,7 +300,7 @@ def execute_tools(state: AgentState) -> dict:
 
 
 def should_continue(state: AgentState) -> Literal["tools", END]:
-    """判断是否继续（工具调用）还是结束"""
+    """Check if should continue with tool calls or end."""
     messages = state.get("messages", [])
     if not messages:
         return END
@@ -360,20 +314,17 @@ def should_continue(state: AgentState) -> Literal["tools", END]:
 def create_agent_graph(
     use_checkpoint: bool = False,
 ):
-    """创建轻量级 Agent Graph - 所有配置由 create_chat_model 内部从环境变量读取"""
+    """Create agent graph."""
     builder = AgentGraphBuilder()
     AgentGraphBuilder._instance = builder
 
-    # 初始化时刷新 MCP 工具
     refresh_mcp_tools()
 
     workflow = StateGraph(AgentState)
 
-    # 核心节点：只保留 agent 和 tools
     workflow.add_node("agent", call_model)
     workflow.add_node("tools", execute_tools)
 
-    # 边：agent → tools(如果需要) → agent → ...
     workflow.set_entry_point("agent")
     workflow.add_conditional_edges(
         "agent",
@@ -386,10 +337,9 @@ def create_agent_graph(
 
     return workflow.compile(
         checkpointer=checkpointer,
-        interrupt_before=None,  # 工具自动执行
+        interrupt_before=None,
     )
 
 
-# 别名用于向后兼容
 create_agent_graph_stream = create_agent_graph
 create_agent_graph_async = create_agent_graph

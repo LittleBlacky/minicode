@@ -1,81 +1,85 @@
-"""Agent state definitions for MiniCode."""
-from typing import Annotated, Any, Optional
-from typing_extensions import TypedDict
+"""Agent state definitions."""
+from __future__ import annotations
 
+from typing import Annotated, Any, Optional, Union
+from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
 
 
-class AgentState(TypedDict):
-    """Main state schema for the MiniCode agent.
-
-    Contains all runtime state that flows through the LangGraph.
-    """
-
-    # Core message history
+class MessageState(TypedDict):
+    """Messages and tool results."""
     messages: Annotated[list, add_messages]
-
-    # Todo management
-    todo_items: list[dict]
-    rounds_since_todo_update: int
-
-    # Execution state
-    execution_steps: list[str]
-    evaluation_score: float
     tool_messages: list[Any]
+    last_summary: str
 
-    # Task system
+
+class TaskState(TypedDict):
+    """Task and todo management."""
     task_items: list[dict]
     pending_tasks: list[dict]
+    todo_items: list[dict]
+    rounds_since_todo_update: int
+    task_type: str
+    matched_skill: Optional[dict]
+    should_create_skill: bool
 
-    # Memory and learning
+
+class MemoryState(TypedDict):
+    """Memory layer injected into system prompt."""
+    static_memory: str
+    session_context: str
+    episodic_memory: str
     has_compacted: bool
-    last_summary: str
     recent_files: list[str]
-    compact_requested: bool
-    compact_focus: Optional[str]
+    should_update_memory: bool
 
-    # Permission
-    mode: str
-    permission_rules: list
-    consecutive_denials: int
 
-    # Team collaboration
+class TeamState(TypedDict):
+    """Team collaboration."""
     teammates: dict[str, dict]
     completed_results: list[dict]
     inbox_notifications: list[dict]
     pending_requests: list[dict]
-
-    # Background tasks
     pending_background_tasks: list[dict]
     completed_notifications: list[dict]
 
-    # Worktree
+
+class ExecutionState(TypedDict):
+    """Execution context and control."""
+    evaluation_score: float
+    execution_steps: list[str]
+    error_recovery_count: int
+    max_output_recovery_count: int
+    compact_requested: bool
+    compact_focus: Optional[str]
     worktree_events: list[dict]
     active_worktrees: list[str]
 
-    # Self-improvement
-    task_type: str
-    matched_skill: Optional[dict]
-    should_create_skill: bool
-    should_update_memory: bool
+
+class ConfigState(TypedDict):
+    """Runtime configuration."""
+    mode: str
+    permission_rules: list
+    consecutive_denials: int
     task_count: int
-
-    # Error recovery
-    max_output_recovery_count: int
-    error_recovery_count: int
-
-    # Scheduled tasks
     scheduled_notifications: list[str]
     active_schedules: list[dict]
 
-    # Memory Layer - 三层架构
-    static_memory: str      # 用户偏好、项目配置
-    session_context: str    # 当前会话状态
-    episodic_memory: str    # 相关经验（按需检索）
+
+class AgentState(
+    MessageState,
+    TaskState,
+    MemoryState,
+    TeamState,
+    ExecutionState,
+    ConfigState,
+):
+    """Complete agent state."""
+    pass
 
 
 class TeammateState(TypedDict):
-    """State for teammate subgraphs."""
+    """Sub-agent state."""
     messages: Annotated[list, add_messages]
     name: str
     role: str
@@ -84,7 +88,89 @@ class TeammateState(TypedDict):
 
 
 class TodoItem(TypedDict):
-    """Todo item schema."""
+    """Todo item."""
     content: str
     status: str
     activeForm: Optional[str] = None
+
+
+def create_initial_state(
+    messages: list = None,
+    mode: str = "default",
+    task_type: str = "",
+) -> AgentState:
+    """Create initial state with defaults."""
+    return {
+        "messages": messages or [],
+        "tool_messages": [],
+        "last_summary": "",
+        "task_items": [],
+        "pending_tasks": [],
+        "todo_items": [],
+        "rounds_since_todo_update": 0,
+        "task_type": task_type,
+        "matched_skill": None,
+        "should_create_skill": False,
+        "static_memory": "",
+        "session_context": "",
+        "episodic_memory": "",
+        "has_compacted": False,
+        "recent_files": [],
+        "should_update_memory": False,
+        "teammates": {},
+        "completed_results": [],
+        "inbox_notifications": [],
+        "pending_requests": [],
+        "pending_background_tasks": [],
+        "completed_notifications": [],
+        "evaluation_score": 0.0,
+        "execution_steps": [],
+        "error_recovery_count": 0,
+        "max_output_recovery_count": 3,
+        "compact_requested": False,
+        "compact_focus": None,
+        "worktree_events": [],
+        "active_worktrees": [],
+        "mode": mode,
+        "permission_rules": [],
+        "consecutive_denials": 0,
+        "task_count": 0,
+        "scheduled_notifications": [],
+        "active_schedules": [],
+    }
+
+
+def get_message_state(state: AgentState) -> MessageState:
+    return {
+        "messages": state["messages"],
+        "tool_messages": state["tool_messages"],
+        "last_summary": state["last_summary"],
+    }
+
+
+def get_task_state(state: AgentState) -> TaskState:
+    return {
+        "task_items": state["task_items"],
+        "pending_tasks": state["pending_tasks"],
+        "todo_items": state["todo_items"],
+        "rounds_since_todo_update": state["rounds_since_todo_update"],
+        "task_type": state["task_type"],
+        "matched_skill": state["matched_skill"],
+        "should_create_skill": state["should_create_skill"],
+    }
+
+
+def get_memory_state(state: AgentState) -> MemoryState:
+    return {
+        "static_memory": state["static_memory"],
+        "session_context": state["session_context"],
+        "episodic_memory": state["episodic_memory"],
+        "has_compacted": state["has_compacted"],
+        "recent_files": state["recent_files"],
+        "should_update_memory": state["should_update_memory"],
+    }
+
+
+# Type aliases
+MinimalState = Union[MessageState, TaskState]
+CheckpointerState = MessageState
