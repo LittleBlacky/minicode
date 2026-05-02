@@ -39,51 +39,69 @@ def _init_hooks() -> None:
     register_permission_hooks()
 
 
+def _on_mcp_tools_changed(tools: list) -> None:
+    """MCP tools changed callback - update TOOL_NODE."""
+    global TOOL_NODE, TOOL_MAP
+
+    from minicode.tools.registry import ALL_TOOLS
+
+    if tools:
+        # 合并 MCP 工具 (冲突时重命名)
+        local_names = {t.name for t in ALL_TOOLS}
+        processed = []
+        for t in tools:
+            if t.name in local_names:
+                from langchain_core.tools import StructuredTool
+                new_t = StructuredTool(
+                    name=f"mcp_{t.name}",
+                    description=t.description,
+                    args_schema=t.args_schema,
+                    coroutine=t.coroutine,
+                )
+                processed.append(new_t)
+            else:
+                processed.append(t)
+
+        renamed = len([t for t in processed if t.name.startswith("mcp_")])
+        print(f"[MCP] Tools updated: {len(processed)} tools ({renamed} renamed)")
+
+        all_tools = ALL_TOOLS + processed
+        TOOL_MAP = {t.name: t for t in all_tools}
+        TOOL_NODE = ToolNode(all_tools, handle_tool_errors=True)
+    else:
+        TOOL_MAP = {t.name: t for t in ALL_TOOLS}
+        TOOL_NODE = ToolNode(ALL_TOOLS, handle_tool_errors=True)
+        print("[MCP] Tools cleared")
+
+    reset_for_mcp_refresh()
+
+
 def refresh_mcp_tools() -> int:
-    """Refresh dynamic MCP tools."""
-    global TOOL_MAP, TOOL_NODE
+    """Refresh dynamic MCP tools (手动刷新接口)."""
+    global TOOL_NODE, TOOL_MAP
 
     try:
-        from minicode.tools.mcp_tools import get_mcp_client
-        from langchain_core.tools import StructuredTool
+        from minicode.tools.mcp_tools import get_mcp_provider
 
-        client = get_mcp_client()
+        provider = get_mcp_provider()
 
+        # 订阅变更事件 (如果尚未订阅)
+        if _on_mcp_tools_changed not in provider._subscribers:
+            provider.subscribe(_on_mcp_tools_changed)
+
+        # 触发刷新
         try:
             loop = asyncio.get_running_loop()
-            asyncio.create_task(client.refresh())
+            asyncio.create_task(provider.refresh())
         except RuntimeError:
             pass
 
-        new_tools = client.get_tools()
+        tools = provider.tools
+        count = len(tools)
+        if count > 0:
+            _on_mcp_tools_changed(tools)
+        return count
 
-        if new_tools:
-            local_tool_names = {t.name for t in ALL_TOOLS}
-
-            processed_mcp_tools = []
-            for t in new_tools:
-                if t.name in local_tool_names:
-                    new_tool = StructuredTool(
-                        name=f"mcp_{t.name}",
-                        description=t.description,
-                        args_schema=t.args_schema,
-                        coroutine=t.coroutine,
-                    )
-                    processed_mcp_tools.append(new_tool)
-                else:
-                    processed_mcp_tools.append(t)
-
-            renamed_count = len([t for t in processed_mcp_tools if t.name.startswith("mcp_")])
-            print(f"[MCP] Added {len(processed_mcp_tools)} tools ({renamed_count} renamed)")
-
-            TOOL_MAP = {t.name: t for t in ALL_TOOLS}
-            for t in processed_mcp_tools:
-                TOOL_MAP[t.name] = t
-
-            TOOL_NODE = ToolNode(ALL_TOOLS + processed_mcp_tools, handle_tool_errors=True)
-            reset_for_mcp_refresh()
-
-            return len(processed_mcp_tools)
     except Exception as e:
         print(f"[MCP] Failed to refresh tools: {e}")
         import traceback
@@ -95,10 +113,9 @@ def refresh_mcp_tools() -> int:
 def get_all_tools() -> list[BaseTool]:
     """Get all available tools including MCP dynamic tools."""
     try:
-        from minicode.tools.mcp_tools import get_mcp_client
-        client = get_mcp_client()
-        mcp_tools = client.get_tools()
-        return ALL_TOOLS + mcp_tools
+        from minicode.tools.mcp_tools import get_mcp_provider
+        provider = get_mcp_provider()
+        return ALL_TOOLS + provider.tools
     except Exception:
         return ALL_TOOLS
 
@@ -274,6 +291,17 @@ def should_continue(state: AgentState) -> Literal["tools", END]:
     return END
 
 
+def _init_mcp_subscription() -> None:
+    """Initialize MCP tools subscription."""
+    try:
+        from minicode.tools.mcp_tools import get_mcp_provider
+        provider = get_mcp_provider()
+        if _on_mcp_tools_changed not in provider._subscribers:
+            provider.subscribe(_on_mcp_tools_changed)
+    except Exception as e:
+        print(f"[MCP] Subscription init failed: {e}")
+
+
 def create_agent_graph(
     use_checkpoint: bool = False,
 ):
@@ -282,6 +310,7 @@ def create_agent_graph(
     AgentGraphBuilder._instance = builder
 
     _init_hooks()  # Initialize hooks (permission checks, etc.)
+    _init_mcp_subscription()  # Subscribe to MCP tool changes
     refresh_mcp_tools()
 
     workflow = StateGraph(AgentState)

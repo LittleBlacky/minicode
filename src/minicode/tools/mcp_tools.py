@@ -1,25 +1,31 @@
-"""MCP (Model Context Protocol) client tools - 使用 langchain-mcp-adapters."""
+"""MCP (Model Context Protocol) client tools - 标准化接口，支持热更新."""
 from __future__ import annotations
 
 import asyncio
 import json
 from pathlib import Path
-from typing import Optional, Any
+from typing import Callable, Optional, Any
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool
 
 WORKDIR = Path.cwd()
 STORAGE_DIR = WORKDIR / ".minicode"
 
 
-class MultiServerMCP:
-    """基于 langchain-mcp-adapters 的 MCP 客户端."""
+class MCPProvider:
+    """MCP 工具提供者 - 标准化接口，支持热更新。
+
+    事件驱动的工具更新:
+    - connect/disconnect 时自动触发更新
+    - 通过 subscribe() 订阅工具变更事件
+    """
 
     def __init__(self, config_path: Optional[Path] = None):
         self.config_path = config_path or STORAGE_DIR / "mcp_servers.json"
         self._client = None
         self._servers: dict[str, dict] = {}
         self._tools: list[Any] = []
+        self._subscribers: list[Callable[[list[BaseTool]], None]] = []
         self._load_config()
 
     def _load_config(self) -> None:
@@ -37,33 +43,93 @@ class MultiServerMCP:
         STORAGE_DIR.mkdir(parents=True, exist_ok=True)
         self.config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
-    async def _ensure_client(self):
-        """确保客户端已初始化."""
+    # ============ 事件订阅 ============
+
+    def subscribe(self, callback: Callable[[list[BaseTool]], None]) -> None:
+        """订阅工具变更事件.
+
+        Args:
+            callback: 工具变更时的回调函数，参数为新的工具列表
+        """
+        if callback not in self._subscribers:
+            self._subscribers.append(callback)
+
+    def unsubscribe(self, callback: Callable[[list[BaseTool]], None]) -> None:
+        """取消订阅."""
+        if callback in self._subscribers:
+            self._subscribers.remove(callback)
+
+    def _notify_changed(self) -> None:
+        """通知所有订阅者工具已更新."""
+        for callback in self._subscribers:
+            try:
+                callback(self._tools)
+            except Exception as e:
+                print(f"[MCP] Subscriber error: {e}")
+
+    # ============ 客户端管理 ============
+
+    async def _ensure_client(self) -> bool:
+        """确保客户端已初始化.
+
+        Returns:
+            True if client initialized, False otherwise
+        """
         if self._client is None:
-            from langchain_mcp_adapters.client import MultiServerMCPClient
-            from langchain_mcp_adapters.sessions import StdioConnection, SSEConnection, WebsocketConnection, StreamableHttpConnection
+            try:
+                from langchain_mcp_adapters.client import MultiServerMCPClient
+                from langchain_mcp_adapters.sessions import (
+                    StdioConnection,
+                    SSEConnection,
+                    WebsocketConnection,
+                    StreamableHttpConnection,
+                )
 
-            connections = {}
-            for name, cfg in self._servers.items():
-                transport = cfg.get("transport")
-                if transport == "stdio":
-                    connections[name] = StdioConnection(
-                        command=cfg.get("command", ""),
-                        args=cfg.get("args", []),
-                        env=cfg.get("env", {}),
-                        transport="stdio",
-                    )
-                elif transport == "sse":
-                    connections[name] = SSEConnection(url=cfg.get("url", ""), transport="sse")
-                elif transport == "websocket":
-                    connections[name] = WebsocketConnection(url=cfg.get("url", ""), transport="websocket")
-                elif transport == "http":
-                    connections[name] = StreamableHttpConnection(url=cfg.get("url", ""), transport="http")
+                connections = {}
+                for name, cfg in self._servers.items():
+                    transport = cfg.get("transport")
+                    if transport == "stdio":
+                        connections[name] = StdioConnection(
+                            command=cfg.get("command", ""),
+                            args=cfg.get("args", []),
+                            env=cfg.get("env", {}),
+                            transport="stdio",
+                        )
+                    elif transport == "sse":
+                        connections[name] = SSEConnection(
+                            url=cfg.get("url", ""), transport="sse"
+                        )
+                    elif transport == "websocket":
+                        connections[name] = WebsocketConnection(
+                            url=cfg.get("url", ""), transport="websocket"
+                        )
+                    elif transport == "http":
+                        connections[name] = StreamableHttpConnection(
+                            url=cfg.get("url", ""), transport="http"
+                        )
 
-            self._client = MultiServerMCPClient(connections=connections or None)
+                self._client = MultiServerMCPClient(connections=connections or None)
+                return True
+            except ImportError as e:
+                print(f"[MCP] langchain-mcp-adapters not installed: {e}")
+                return False
+            except Exception as e:
+                print(f"[MCP] Failed to init client: {e}")
+                return False
+        return True
+
+    # ============ 连接管理 ============
 
     async def connect(self, name: str, config: dict) -> str:
-        """连接 MCP 服务器."""
+        """连接 MCP 服务器.
+
+        Args:
+            name: 服务器名称
+            config: 服务器配置 {transport, command, args, env, url}
+
+        Returns:
+            连接结果消息
+        """
         if name in self._servers:
             return f"[Error] Server '{name}' already exists"
 
@@ -75,8 +141,14 @@ class MultiServerMCP:
         self._save_config()
 
         try:
-            await self._ensure_client()
-            return f"[MCP] Connected to {name} (call mcp_refresh to load tools)"
+            # 重新初始化客户端
+            self._client = None
+            if await self._ensure_client():
+                await self.refresh()
+                self._notify_changed()
+                return f"[MCP] Connected to {name}"
+            else:
+                return f"[MCP] Config saved, but langchain-mcp-adapters not available"
         except Exception as e:
             if name in self._servers:
                 del self._servers[name]
@@ -84,7 +156,14 @@ class MultiServerMCP:
             return f"[Error] Failed to connect: {e}"
 
     def disconnect(self, name: str) -> str:
-        """断开 MCP 服务器."""
+        """断开 MCP 服务器.
+
+        Args:
+            name: 服务器名称
+
+        Returns:
+            断开结果消息
+        """
         if name not in self._servers:
             return f"[Error] Server '{name}' not found"
 
@@ -93,48 +172,74 @@ class MultiServerMCP:
 
         self._client = None
         self._tools = []
+        self._notify_changed()
 
         return f"[MCP] Disconnected from {name}"
 
     def list_servers(self) -> list[dict]:
         """列出所有已配置的服务器."""
-        return [
-            {"name": name, "config": cfg}
-            for name, cfg in self._servers.items()
-        ]
+        return [{"name": name, "config": cfg} for name, cfg in self._servers.items()]
 
-    def get_tools(self) -> list[Any]:
+    # ============ 工具访问 ============
+
+    @property
+    def tools(self) -> list[Any]:
         """获取所有可用的 LangChain 工具."""
         return self._tools
 
-    async def _refresh_async(self) -> int:
-        """刷新工具列表（异步实现）."""
-        if self._client is None:
-            await self._ensure_client()
-
-        if self._client is not None:
-            self._tools = await self._client.get_tools()
-
-        return len(self._tools)
-
     async def refresh(self) -> int:
-        """刷新工具列表."""
-        return await self._refresh_async()
+        """刷新工具列表.
+
+        Returns:
+            获取到的工具数量
+        """
+        if not await self._ensure_client():
+            return 0
+
+        try:
+            self._tools = await self._client.get_tools()
+            return len(self._tools)
+        except Exception as e:
+            print(f"[MCP] Refresh failed: {e}")
+            return 0
+
+    # ============ 便捷方法 ============
+
+    def get_tools_info(self) -> str:
+        """获取工具信息用于显示."""
+        if not self._tools:
+            return "No MCP tools available."
+
+        lines = [f"# MCP Tools ({len(self._tools)})", ""]
+        for t in self._tools:
+            desc = t.description[:60] if t.description else "No description"
+            lines.append(f"- **{t.name}**: {desc}...")
+        return "\n".join(lines)
 
 
-# 全局 MCP 客户端实例
-_mcp_client: Optional["MultiServerMCP"] = None
+# ============ 全局实例 ============
+
+_mcp_provider: Optional["MCPProvider"] = None
 
 
-def get_mcp_client() -> MultiServerMCP:
-    """获取全局 MCP 客户端实例."""
-    global _mcp_client
-    if _mcp_client is None:
-        _mcp_client = MultiServerMCP()
-    return _mcp_client
+def get_mcp_provider() -> "MCPProvider":
+    """获取全局 MCPProvider 实例."""
+    global _mcp_provider
+    if _mcp_provider is None:
+        _mcp_provider = MCPProvider()
+    return _mcp_provider
 
 
-# ============ LangChain Tools (异步) ============
+def reset_mcp_provider() -> None:
+    """重置全局实例 (用于测试)."""
+    global _mcp_provider
+    _mcp_provider = None
+
+
+# ============ LangChain Tools ============
+
+from langchain_core.tools import tool
+
 
 @tool
 async def mcp_connect(
@@ -155,58 +260,40 @@ async def mcp_connect(
         env: For stdio transport - environment variables as JSON string
         url: For sse/websocket/http transport - the server URL
     """
-    client = get_mcp_client()
+    provider = get_mcp_provider()
 
-    cfg = {"transport": transport}
+    config = {"transport": transport}
     if transport == "stdio":
-        cfg["command"] = command
-        args = cmd_args
-        if isinstance(args, str):
-            args = args.split() if args else []
-        cfg["args"] = args
-        if isinstance(env, str):
+        config["command"] = command
+        args = cmd_args.split() if isinstance(cmd_args, str) and cmd_args else []
+        config["args"] = args
+        if isinstance(env, str) and env:
             try:
-                env = json.loads(env) if env else {}
+                config["env"] = json.loads(env)
             except Exception:
-                env = {}
-        cfg["env"] = env or {}
+                config["env"] = {}
+        else:
+            config["env"] = {}
     elif transport in ("sse", "websocket", "http"):
-        cfg["url"] = url
+        config["url"] = url
     else:
         return f"[Error] Unknown transport: {transport}"
 
-    result = await client.connect(server_name, cfg)
-
-    if "Connected" in result:
-        try:
-            from minicode.agent.graph import refresh_mcp_tools
-            refresh_mcp_tools()
-        except Exception:
-            pass
-
-    return result
+    return await provider.connect(server_name, config)
 
 
 @tool
-async def mcp_disconnect(server_name: str) -> str:
+def mcp_disconnect(server_name: str) -> str:
     """Disconnect from an MCP server."""
-    client = get_mcp_client()
-    result = client.disconnect(server_name)
-
-    try:
-        from minicode.agent.graph import refresh_mcp_tools
-        refresh_mcp_tools()
-    except Exception:
-        pass
-
-    return result
+    provider = get_mcp_provider()
+    return provider.disconnect(server_name)
 
 
 @tool
 def mcp_list() -> str:
-    """List all configured MCP servers and available tools."""
-    client = get_mcp_client()
-    servers = client.list_servers()
+    """List all configured MCP servers."""
+    provider = get_mcp_provider()
+    servers = provider.list_servers()
 
     if not servers:
         return """# MCP Servers
@@ -237,29 +324,10 @@ mcp_connect(
     for srv in servers:
         lines.append(f"- **{srv['name']}** ({srv['config']['transport']})")
 
-    tools = client.get_tools()
-    if tools:
-        lines.append(f"\n# Available Tools ({len(tools)})")
-        for t in tools:
+    if provider.tools:
+        lines.append(f"\n# Available Tools ({len(provider.tools)})")
+        for t in provider.tools:
             lines.append(f"- `{t.name}`: {t.description[:60]}...")
-
-    return "\n".join(lines)
-
-
-@tool
-def mcp_get_tools() -> str:
-    """Get all MCP tools as a formatted list for agent use."""
-    client = get_mcp_client()
-    tools = client.get_tools()
-
-    if not tools:
-        return "No MCP tools available. Connect to a server first."
-
-    lines = [f"# MCP Tools ({len(tools)})", ""]
-    for t in tools:
-        lines.append(f"## {t.name}")
-        lines.append(f"{t.description}")
-        lines.append("")
 
     return "\n".join(lines)
 
@@ -267,16 +335,12 @@ def mcp_get_tools() -> str:
 @tool
 async def mcp_refresh() -> str:
     """Refresh MCP tools from all connected servers."""
-    client = get_mcp_client()
-    count = await client.refresh()
-
-    try:
-        from minicode.agent.graph import refresh_mcp_tools
-        refresh_mcp_tools()
-        return f"[MCP] Refreshed, {count} tools available and registered"
-    except Exception as e:
-        return f"[MCP] Refreshed client, {count} tools available. Warning: {e}"
+    provider = get_mcp_provider()
+    count = await provider.refresh()
+    if count > 0:
+        provider._notify_changed()
+    return f"[MCP] Refreshed, {count} tools available"
 
 
 # 导出工具列表
-MCP_TOOLS = [mcp_connect, mcp_disconnect, mcp_list, mcp_get_tools, mcp_refresh]
+MCP_TOOLS = [mcp_connect, mcp_disconnect, mcp_list, mcp_refresh]
